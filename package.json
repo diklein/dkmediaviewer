@@ -7,7 +7,7 @@
   "homepage": "https://diklein.com/dkmediaviewer",
   "type": "module",
   "bin": {
-    "dkmediaviewer": "./cli/scan.mjs"
+    "dkmediaviewer": "cli/scan.mjs"
   },
   "files": [
     "cli",
