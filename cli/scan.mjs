@@ -21,11 +21,30 @@ import exifr from 'exifr'
 const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif'])
 const VIDEO_EXTS = new Set(['.mp4', '.webm'])
 
+const HELP = `dkmediaviewer — companion CLI for the DKMediaViewer component
+https://diklein.com/dkmediaviewer
+
+Usage
+  npx dkmediaviewer scan <folder> [options]
+
+Scans a folder of images and writes a ready-to-render items.json for
+<DKMediaViewer>. Dimensions and camera EXIF (make, model, shutter, aperture,
+focal length, ISO) are read straight from the files. A clip.mp4 next to a
+clip.jpg becomes one video item with the jpg as its poster.
+
+Options
+  --base <prefix>   Public URL prefix for src paths. Default: the folder path
+                    with a leading "public/" stripped (the Next.js convention).
+  --out <file>      Output path. Default: items.json
+  -h, --help        Show this help.
+`
+
 function parseArgs(argv) {
   const args = { _: [] }
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--base') args.base = argv[++i]
     else if (argv[i] === '--out') args.out = argv[++i]
+    else if (argv[i] === '--help' || argv[i] === '-h') args.help = true
     else args._.push(argv[i])
   }
   return args
@@ -66,9 +85,14 @@ async function readExif(file) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2).filter((a) => a !== 'scan'))
+  if (args.help) {
+    console.log(HELP)
+    return
+  }
   const folder = args._[0]
   if (!folder) {
     console.error('usage: dkmediaviewer scan <folder> [--base /public-url-prefix] [--out items.json]')
+    console.error('       npx dkmediaviewer --help for details')
     process.exit(1)
   }
 
