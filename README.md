@@ -1,20 +1,29 @@
 # DKMediaViewer
 
-A photo & video viewer for React, extracted from [diklein.com](https://diklein.com) — where every detail was argued over on a real site before it got here. Masonry grid, a fly-in lightbox that turns your thumbnail's own pixels into the modal, swipe/keyboard carousel, captions and camera EXIF when they exist, light & dark, reduced-motion, and one easter egg.
+DKMediaViewer is a minimalist, performant, and elegant photo and video viewer for React that was extracted from [diklein.com](https://diklein.com). 
 
-The `DK` prefix is an homage to NeXTSTEP — this is an `NSView` that took photography classes.
+Features:
+- Masonry grid
+- Fly-in lightbox
+- Carousel
+- Captions and camera EXIF data
+- Light and dark modes
+- Reduced-motion support
+- Oh... and one easter egg
+
+The `DK` prefix is of course an homage to NeXTSTEP's `NS` prefixes.
 
 **Live demo & docs:** [diklein.com/dkmediaviewer](https://diklein.com/dkmediaviewer)
 
 ## Install
 
-Distributed as a [shadcn registry](https://ui.shadcn.com/docs/registry) — the CLI drops the **source code** into your project. No package to depend on, nothing to lock; the code is yours to keep or change.
+The viewer is distributed through the [shadcn registry](https://ui.shadcn.com/docs/registry). The CLI drops the source code right into your project. 
 
 ```bash
 npx shadcn@latest add https://diklein.com/r/dk-media-viewer.json
 ```
 
-Requires React 18+ and Tailwind CSS v4. The only npm dependency it brings is [`motion`](https://motion.dev).
+React 18+ and Tailwind CSS v4 are required. The only npm dependency it brings in is [`motion`](https://motion.dev).
 
 ## Use
 
@@ -43,30 +52,30 @@ An item is just:
 }
 ```
 
-Everything optional degrades cleanly: no EXIF → no spec line, no caption → the photo gets the space.
+Optional data like EXIF and caption degrade elegantly.
 
-## Or point it at a folder
+## You can also point DKMediaViewer at a folder
 
-You don't have to write that array. Scan a folder and the real EXIF comes straight out of the files:
+You don't have to write `media-items.json` yourself. Point the CLI at your photo folder and it generates the file for you. Dimensions and camera settings come from the EXIF embedded in each image.
 
 ```bash
 npx dkmediaviewer scan ./public/photos --out src/lib/media-items.json
 ```
 
-Dimensions and camera settings are read from each image; `clip.mp4` + `clip.jpg` pairs become video items automatically.
+Videos need a poster image because it gives a video something to show instantly (in the grid, mid-animation, or when a device blocks autoplay) instead of a black box while the video loads. Give a video and an image the same name, like `clip.mp4` and `clip.jpg`, and the scanner joins them into a single video item. The clip plays and the image is its poster frame.
 
 ## The details
 
-- **The open animation is the thumbnail.** The lightbox flies the already-decoded pixels from the grid into place — no re-fetch, no flash, spring-physics all the way.
-- **Carousel** — swipe with axis-lock and rubber-banding at the ends, arrow keys, on-screen controls; swipe down to dismiss.
-- **A real modal** — everything behind it goes `inert`, focus enters the dialog, Tab cycles its controls, and close hands focus back to the item you were viewing (with a focus ring only for keyboard users).
-- **Light & dark** via the `.dark` class (shadcn convention), falling back to `prefers-color-scheme`. Every color is a `--dk-*` variable — retheme in one selector.
-- **`prefers-reduced-motion`** honored everywhere: no autoplay, no shimmer sweep, instant transitions.
-- **Videos** keep playing through the open animation and hand off frame-accurately to the modal player.
+- **The open animation starts from the thumbnail:** The lightbox animates the image already on your screen into place instead of fetching a new copy mid-flight. No re-fetch, no flash.
+- **Carousel:** swipe with axis-lock and rubber-banding at the ends. Arrow keys and on-screen controls can also switch assets. A swipe down will dismiss the lightbox on mobile.
+- **A real modal:** Everything behind the modal goes `inert` and focus enters the dialog. The `Tab` key cycles controls, and a close hands focus back to the item you were viewing (with a focus ring appearing only for keyboard users).
+- **Light and dark mode** via the `.dark` class (shadcn convention), falling back to `prefers-color-scheme`. Every color is a `--dk-*` variable.
+- **`prefers-reduced-motion`** is honored everywhere: no autoplay, no shimmer sweep, and instant transitions.
+- **Videos** keep playing through the open animation and hand off frame-accurately to the modal player. This was inspired by the minimize feature Steve Jobs [demonstrated](https://youtu.be/2GkoAa5718Y?t=165) in the Mac OS X introduction in 2000.
 
 ## The easter egg
 
-Hold **Shift** while clicking a photo — or while pressing an arrow key inside the lightbox — and the animation runs at one-tenth speed. If you know why, you know. (Mac OS X 10.3 shipped shift-click-minimize as a slow-motion genie effect, and Exposé kept the tradition. Some of us never got over it.)
+Hold the `Shift` key while clicking a photo (or while pressing an arrow key inside the lightbox) and the animation runs at one-tenth speed. Mac OS X 10.3 shipped shift-click-minimize as a slow-motion genie effect, and Exposé kept the tradition. Some of us never got over it.
 
 ## Theming
 

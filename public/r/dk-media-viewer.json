@@ -2,7 +2,7 @@
   "$schema": "https://ui.shadcn.com/schema/registry-item.json",
   "name": "dk-media-viewer",
   "title": "DKMediaViewer",
-  "description": "A photo and video viewer: masonry grid, fly-in lightbox with carousel, captions and EXIF when present, light/dark, reduced-motion, keyboard navigation — and a slow-motion shift-click for Mac OS X Panther fans.",
+  "description": "A minimalist, performant photo and video viewer for React. Masonry grid, fly-in lightbox, carousel, captions and camera EXIF data, light and dark modes, reduced-motion support, keyboard navigation, and one easter egg.",
   "dependencies": [
     "motion"
   ],
