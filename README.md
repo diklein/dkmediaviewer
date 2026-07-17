@@ -42,13 +42,13 @@ An item is just:
 {
   src: '/photos/golden-gate.jpg',
   alt: 'Golden Gate Bridge in fog',
-  caption: 'Marin Headlands, October.',   // optional — shown in the lightbox rail
-  width: 2048, height: 1365,              // optional — avoids layout shift
-  exif: {                                  // optional — the mono spec line
+  caption: 'Marin Headlands, October.',   // optional: shown in the lightbox rail
+  width: 2048, height: 1365,              // optional: avoids layout shift
+  exif: {                                  // optional: the mono spec line
     make: 'Ricoh', model: 'GR IIIx',
     exposureTime: '1/500', aperture: '2.8', focalLength: '26.1', iso: 200,
   },
-  videoSrc: '/photos/clip.mp4',           // optional — makes it a video (src = poster)
+  videoSrc: '/photos/clip.mp4',           // optional: makes it a video (src = poster)
 }
 ```
 

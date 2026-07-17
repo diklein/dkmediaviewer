@@ -21,7 +21,7 @@ import exifr from 'exifr'
 const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif'])
 const VIDEO_EXTS = new Set(['.mp4', '.webm'])
 
-const HELP = `dkmediaviewer — companion CLI for the DKMediaViewer component
+const HELP = `dkmediaviewer, the companion CLI for the DKMediaViewer component
 https://diklein.com/dkmediaviewer
 
 Usage
