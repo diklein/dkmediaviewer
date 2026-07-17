@@ -64,16 +64,46 @@ npx dkmediaviewer scan ./public/photos --out src/lib/media-items.json
 
 Videos need a poster image because it gives a video something to show instantly (in the grid, mid-animation, or when a device blocks autoplay) instead of a black box while the video loads. Give a video and an image the same name, like `clip.mp4` and `clip.jpg`, and the scanner joins them into a single video item. The clip plays and the image is its poster frame.
 
-## One file per photo is enough
+## One file per photo is enough, two are better
 
 The grid and the lightbox share `src`, so a single reasonably large image works out of the box. The browser scales it down in the grid and shows it full size in the lightbox.
 
-If you serve responsive sizes through a CDN or an image optimizer, pass `getHiResSrc`. The lightbox always opens by animating the image already on your screen, then fades in the sharper version once the animation has landed, so the upgrade never delays the open.
+When your originals are heavy, use two sizes: the grid loads a small file and the lightbox upgrades to the large one. The upgrade never delays the open, because the lightbox always opens by animating the image already on your screen, then fades in the sharper version once the animation has landed. Three ways to get there:
+
+If your images live on a CDN or behind an image optimizer, point `src` at a small render and rewrite it in `getHiResSrc`:
 
 ```tsx
 <DKMediaViewer
   items={items}
   getHiResSrc={(item) => item.src.replace('w=800', 'w=2048')}
+/>
+```
+
+On Next.js, pass `renderImage` and let `next/image` generate the small grid variants from the same large file:
+
+```tsx
+<DKMediaViewer
+  items={items}
+  renderImage={(item, ctx) => (
+    <Image
+      src={item.src}
+      alt={item.alt ?? ''}
+      width={item.width}
+      height={item.height}
+      sizes={ctx.sizes}
+      className={ctx.className}
+      priority={ctx.priority}
+    />
+  )}
+/>
+```
+
+With plain files, keep a folder of thumbnails beside the originals and map between them:
+
+```tsx
+<DKMediaViewer
+  items={items}  // src points at photos/thumbs/
+  getHiResSrc={(item) => item.src.replace('/thumbs/', '/full/')}
 />
 ```
 
