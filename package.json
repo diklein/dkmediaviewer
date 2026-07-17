@@ -1,0 +1,32 @@
+{
+  "name": "dkmediaviewer",
+  "version": "0.1.0",
+  "description": "A photo & video viewer for React — masonry grid, fly-in lightbox, carousel, captions, EXIF, and a slow-motion easter egg for Panther fans. Distributed as a shadcn registry: the code lands in your project, and it's yours.",
+  "license": "MIT",
+  "author": "David Klein (https://diklein.com)",
+  "homepage": "https://diklein.com/dkmediaviewer",
+  "type": "module",
+  "bin": {
+    "dkmediaviewer": "./cli/scan.mjs"
+  },
+  "files": [
+    "cli",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "react",
+    "lightbox",
+    "gallery",
+    "photo-grid",
+    "carousel",
+    "exif",
+    "shadcn",
+    "shadcn-registry",
+    "tailwind"
+  ],
+  "dependencies": {
+    "exifr": "^7.1.3",
+    "image-size": "^2.0.2"
+  }
+}

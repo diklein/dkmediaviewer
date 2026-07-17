@@ -1,0 +1,37 @@
+{
+  "$schema": "https://ui.shadcn.com/schema/registry.json",
+  "name": "dkmediaviewer",
+  "homepage": "https://diklein.com/dkmediaviewer",
+  "items": [
+    {
+      "name": "dk-media-viewer",
+      "type": "registry:component",
+      "title": "DKMediaViewer",
+      "description": "A photo and video viewer: masonry grid, fly-in lightbox with carousel, captions and EXIF when present, light/dark, reduced-motion, keyboard navigation — and a slow-motion shift-click for Mac OS X Panther fans.",
+      "dependencies": ["motion"],
+      "files": [
+        {
+          "path": "registry/dk-media-viewer/dk-media-viewer.tsx",
+          "type": "registry:component"
+        },
+        {
+          "path": "registry/dk-media-viewer/dk-lightbox.tsx",
+          "type": "registry:component"
+        },
+        {
+          "path": "registry/dk-media-viewer/dk-carousel.tsx",
+          "type": "registry:component"
+        },
+        {
+          "path": "registry/dk-media-viewer/types.ts",
+          "type": "registry:lib"
+        },
+        {
+          "path": "registry/dk-media-viewer/dk-media-viewer.css",
+          "type": "registry:file",
+          "target": "components/dk-media-viewer/dk-media-viewer.css"
+        }
+      ]
+    }
+  ]
+}

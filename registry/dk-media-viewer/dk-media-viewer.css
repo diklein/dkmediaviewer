@@ -1,0 +1,88 @@
+/* DKMediaViewer — theme tokens + the handful of rules Tailwind utilities can't express.
+ *
+ * Every color routes through a --dk-* variable so theming is one override away:
+ *
+ *   .dk-scope { --dk-accent: rebeccapurple; }
+ *
+ * Dark mode follows the shadcn convention (a `.dark` class on <html>) and falls back to
+ * prefers-color-scheme when no theme class is in play. Fonts default to the system stacks;
+ * point --dk-font-sans / --dk-font-mono at your own faces to match your site. */
+
+.dk-scope {
+  --dk-bg: #ffffff;
+  --dk-fg: #1a1a1a;
+  --dk-muted: #6b6b6b;
+  --dk-surface: rgb(0 0 0 / 0.05);
+  --dk-accent: #e03131;
+  --dk-outline: rgb(0 0 0 / 0.1);
+  --dk-font-sans: ui-sans-serif, system-ui, sans-serif;
+  --dk-font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
+}
+
+.dark .dk-scope {
+  --dk-bg: #101216;
+  --dk-fg: #ededed;
+  --dk-muted: #9a9a9a;
+  --dk-surface: rgb(255 255 255 / 0.08);
+  --dk-outline: rgb(255 255 255 / 0.1);
+}
+
+/* No theme class anywhere up the tree? Track the OS. (:where() keeps specificity at zero so
+   the .dark rule above always wins when present.) */
+@media (prefers-color-scheme: dark) {
+  :where(html:not(.light) .dk-scope) {
+    --dk-bg: #101216;
+    --dk-fg: #ededed;
+    --dk-muted: #9a9a9a;
+    --dk-surface: rgb(255 255 255 / 0.08);
+    --dk-outline: rgb(255 255 255 / 0.1);
+  }
+}
+
+/* A hairline edge INSIDE the photo (outline, not border, so it never adds layout size) —
+   keeps near-white photos from dissolving into a light page, and near-black ones into dark. */
+.dk-img-outline {
+  outline: 1px solid var(--dk-outline);
+  outline-offset: -1px;
+}
+
+/* Loading placeholder: a quiet tint with a translucent sweep. */
+.dk-shimmer {
+  position: relative;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--dk-fg) 4%, transparent);
+}
+.dk-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--dk-fg) 6%, transparent), transparent);
+  animation: dk-shimmer-sweep 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dk-shimmer::after {
+    animation: none;
+  }
+}
+@keyframes dk-shimmer-sweep {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* Grid perf: skip rendering off-screen rows until they approach the viewport. */
+.dk-cv-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}
+
+/* The lightbox caption rail hugs the home-indicator area on notched phones. */
+.dk-rail-foot {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+@media (min-width: 56.25rem) {
+  .dk-rail-foot {
+    padding-bottom: 1.25rem;
+  }
+}
