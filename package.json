@@ -1,7 +1,7 @@
 {
   "name": "dkmediaviewer",
   "version": "0.1.0",
-  "description": "A minimalist, performant photo and video viewer for React, extracted from diklein.com. Masonry grid, fly-in lightbox, carousel, captions and camera EXIF data, light and dark modes, reduced-motion support, and one easter egg. Distributed through the shadcn registry: the CLI drops the source code right into your project.",
+  "description": "A minimalist, performant, and elegant photo and video viewer for React, extracted from diklein.com. Masonry grid, fly-in lightbox, a crossfading carousel, captions and camera EXIF data, light and dark modes, reduced-motion support, and one easter egg. Distributed through the shadcn registry.",
   "license": "MIT",
   "author": "David Klein (https://diklein.com)",
   "homepage": "https://diklein.com/dkmediaviewer",

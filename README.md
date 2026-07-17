@@ -4,8 +4,8 @@ DKMediaViewer is a minimalist, performant, and elegant photo and video viewer fo
 
 Features:
 - Masonry grid
-- Fly-in lightbox
-- Carousel
+- Fly-in lightbox with swipe and arrow-key navigation
+- A crossfading carousel component
 - Captions and camera EXIF data
 - Light and dark modes
 - Reduced-motion support
@@ -64,10 +64,20 @@ npx dkmediaviewer scan ./public/photos --out src/lib/media-items.json
 
 Videos need a poster image because it gives a video something to show instantly (in the grid, mid-animation, or when a device blocks autoplay) instead of a black box while the video loads. Give a video and an image the same name, like `clip.mp4` and `clip.jpg`, and the scanner joins them into a single video item. The clip plays and the image is its poster frame.
 
+## The carousel
+
+A second component, `DKCarousel`, runs the same items as a crossfading slideshow that auto-advances. Click a slide and the lightbox opens over the whole set, navigable with the same arrows.
+
+```tsx
+import { DKCarousel } from '@/components/dk-media-viewer/dk-carousel'
+
+<DKCarousel items={items} ratio="3 / 2" />
+```
+
 ## The details
 
 - **The open animation starts from the thumbnail:** The lightbox animates the image already on your screen into place instead of fetching a new copy mid-flight. No re-fetch, no flash.
-- **Carousel:** swipe with axis-lock and rubber-banding at the ends. Arrow keys and on-screen controls can also switch assets. A swipe down will dismiss the lightbox on mobile.
+- **Lightbox navigation:** swipe with axis-lock and rubber-banding at the ends. Arrow keys and on-screen controls can also switch assets. A swipe down will dismiss the lightbox on mobile.
 - **A real modal:** Everything behind the modal goes `inert` and focus enters the dialog. The `Tab` key cycles controls, and a close hands focus back to the item you were viewing (with a focus ring appearing only for keyboard users).
 - **Light and dark mode** via the `.dark` class (shadcn convention), falling back to `prefers-color-scheme`. Every color is a `--dk-*` variable.
 - **`prefers-reduced-motion`** is honored everywhere: no autoplay, no shimmer sweep, and instant transitions.

@@ -7,7 +7,7 @@
       "name": "dk-media-viewer",
       "type": "registry:component",
       "title": "DKMediaViewer",
-      "description": "A minimalist, performant photo and video viewer for React. Masonry grid, fly-in lightbox, carousel, captions and camera EXIF data, light and dark modes, reduced-motion support, keyboard navigation, and one easter egg.",
+      "description": "A minimalist, performant, and elegant photo and video viewer for React. Masonry grid, fly-in lightbox, a crossfading carousel, captions and camera EXIF data, light and dark modes, reduced-motion support, keyboard navigation, and one easter egg.",
       "dependencies": [
         "motion"
       ],
