@@ -39,13 +39,23 @@ function toTitleCase(str: string): string {
   return str.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
+/** EXIF `Make` is often the full legal name ("NIKON CORPORATION", "CASIO COMPUTER CO.,LTD.").
+ *  Strip the legal-entity tail(s) so the spec line reads like a photographer, not a filing:
+ *  "Nikon D610", never "Nikon Corporation D610". */
+function cleanMake(raw: string): string {
+  let make = toTitleCase(raw)
+  const legal = /[\s,]*(Corporation|Corp|Company|Co|Ltd|Inc|Gmbh|K\.K)\.?,?$/i
+  while (legal.test(make)) make = make.replace(legal, '')
+  return make
+}
+
 /** "Ricoh GR IIIx · 26.1mm · ƒ/2.8 · 1/500s · ISO 200" — omits whatever is missing.
  *  Drops a leading brand word from the model that just repeats the make (make "Ricoh",
  *  model "RICOH GR IIIx" → "GR IIIx"), so the camera never reads doubled. */
 export function formatExif(exif?: DKExif | null): string {
   if (!exif) return ''
   const parts: string[] = []
-  const make = exif.make ? toTitleCase(exif.make) : null
+  const make = exif.make ? cleanMake(exif.make) : null
   let model = exif.model ?? null
   if (make && model) {
     model = model.replace(new RegExp(`^${make.split(/[\s,]/)[0]}\\s+`, 'i'), '') || null
