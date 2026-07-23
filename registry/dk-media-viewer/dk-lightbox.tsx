@@ -70,6 +70,10 @@ const SPRING_SLOW = { type: 'spring', duration: 3, bounce: 0.2 } as const
 const SLOW_OPEN_SPRING = SPRING_SLOW
 const SLOW_NAV_SPRING = SPRING_SLOW
 const CLOSE_DRAG = 100 // swipe the image down past this (px) to dismiss
+/* The veil (the in-document layer the iOS bottom bar blurs — see the backdrop effect) never
+ * goes below THIS opacity while mounted: at exactly 0 an element paints nothing and Safari
+ * tears its layers down, and rebuilding is the lazy path that popped instead of fading. */
+const VEIL_MIN_OPACITY = 0.002
 
 // Contain-fit a photo of intrinsic (w×h) inside a container rect → the image's actual on-screen
 // rectangle. The flying-clone open flies to THIS rect (not the container's), so start and end
@@ -134,6 +138,11 @@ export interface DKLightboxProps {
    *  video frame). The opener hides the clicked origin element on this signal rather than at
    *  click, so the asset never blinks out before its flying copy is visibly on screen. */
   onFlightPainted?: () => void
+  /** Fired ONCE, when the open has fully settled (the flying clone has been dropped and the
+   *  modal owns the screen). The opener RESTORES the hidden origin element on this signal —
+   *  the modal covers it completely, and having it back means a later swipe-down reveals the
+   *  asset you tapped instead of a blank hole in the page. */
+  onSettled?: () => void
 }
 
 /** Loading shimmer sized to the asset's contained (letterboxed) rect rather than the whole
@@ -192,7 +201,16 @@ function AssetOutline({ w, h }: { w?: number; h?: number }) {
 /** A clip playing inside the lightbox: shimmer while it loads, then a 2px accent progress bar
  *  matched to the video's contained (letterboxed) rect. Only the current slide autoplays; on
  *  nav the slide remounts (keyed by src) so it reliably plays. */
-function LightboxVideo({ item, priority, onLoad, armed = true }: { item: DKLightboxItem; priority?: boolean; onLoad?: () => void; armed?: boolean }) {
+function LightboxVideo({ item, priority, onLoad, armed = true, getCloneTime }: {
+  item: DKLightboxItem
+  priority?: boolean
+  onLoad?: () => void
+  armed?: boolean
+  /** The playhead of the frame the flying clone is CURRENTLY showing — its live video's time
+   *  when that has painted, else the frozen poster's captured time. The reveal syncs to this,
+   *  because this clip plays behind the veil while it loads and drifts away from the clone. */
+  getCloneTime?: () => number | null
+}) {
   const ref = useRef<HTMLVideoElement>(null)
   // The REVEAL must not run until the fly-in has landed — otherwise the modal clip would appear
   // over the top of the clone that is still flying. This clip is already playing by then (in sync
@@ -207,6 +225,8 @@ function LightboxVideo({ item, priority, onLoad, armed = true }: { item: DKLight
   }, [armed])
   const onLoadRef = useRef(onLoad)
   useEffect(() => { onLoadRef.current = onLoad })
+  const getCloneTimeRef = useRef(getCloneTime)
+  useEffect(() => { getCloneTimeRef.current = getCloneTime })
   const [progress, setProgress] = useState(0)
   const [ready, setReady] = useState(false)
   const [bar, setBar] = useState<{ w: number; left: number; top: number } | null>(null)
@@ -250,13 +270,36 @@ function LightboxVideo({ item, priority, onLoad, armed = true }: { item: DKLight
     // nothing to reconcile, and the clip never stops moving.
     let started = false
     let revealed = false
+    // COLD-CACHE GUARD: the reveal may not run until the seek to the clicked frame has LANDED.
+    //
+    // Setting currentTime updates the property immediately but seeks asynchronously — and on a
+    // cold cache a seek deep into the file has to fetch and decode a distant byte range, which
+    // takes long enough that requestVideoFrameCallback fires first with frame 0 still on screen.
+    // The reveal then dropped the clone (showing the correct clicked frame) over a modal video
+    // showing the START of the clip: the picture jumped backwards at the end of the fly-in, then
+    // jumped again when the seek landed. Warm caches seek instantly, which is why it only ever
+    // showed cold. FlightVideo has always gated on the landed seek; this is the same gate.
+    let seekTarget = priority && item.videoTime ? item.videoTime : 0
+    let seekLanded = seekTarget <= 0
+    let seekFailsafe: number | undefined
+    let resyncs = 0
     const startPlayback = () => {
       if (started) return
       started = true
       // Match the clone's starting frame. Only the clicked clip (priority) does this; neighbours
       // rest at frame 0 until they are swiped to.
       if (priority && item.videoTime && v.currentTime < 0.05) {
-        try { v.currentTime = item.videoTime } catch { /* not seekable yet — plays from 0 */ }
+        try {
+          v.currentTime = item.videoTime
+          // If `seeked` somehow never fires (a stream that can't land it), reveal anyway after
+          // 4s — the clone (the clip itself, playing) covers the whole wait, so the failsafe
+          // only trades a permanently-hidden modal video for a worst-case late swap.
+          seekFailsafe = window.setTimeout(() => { seekLanded = true; maybeReveal() }, 4000)
+        } catch {
+          seekLanded = true // not seekable yet — plays from 0; nothing better to wait for
+        }
+      } else {
+        seekLanded = true // no seek needed: the current frame is already the right frame
       }
       if (priority) v.play().catch(() => {})
     }
@@ -292,16 +335,46 @@ function LightboxVideo({ item, priority, onLoad, armed = true }: { item: DKLight
       const to = window.setTimeout(reveal, 120) // safety net if playback never starts
       rvfc.call(v, () => { window.clearTimeout(to); reveal() })
     }
-    revealRef.current = revealOnPaintedFrame
-    const onReady = () => {
-      measure()
-      startPlayback() // in sync with the clone, from the first moment it can be
-      if (revealed) return
+    // The single reveal funnel: seek landed AND flight landed (armed) AND in step with the
+    // clone, else park in pending. `revealRef` points HERE (not at revealOnPaintedFrame), so
+    // the armed-flip re-fire runs the same gates — it used to jump straight to the paint wait,
+    // which skipped the sync check below.
+    const maybeReveal = () => {
+      if (revealed || !seekLanded) return
       // The flight has not landed yet: keep this clip playing BEHIND the clone (the container is
       // still transparent) and reveal the moment `armed` flips.
       if (!armedRef.current) { pendingRef.current = true; return }
+      // FINAL SYNC. "Both start from the clicked frame and play at 1x, so they stay together"
+      // is only true when both START at the same wall-clock moment. On a slow load this clip
+      // begins playing whenever its data arrives — behind the veil — while the clone has been
+      // showing the clicked frame (frozen poster) or its own live playback the whole time. By
+      // reveal time the two could be seconds apart, and the swap jumped: THE flash at the end
+      // of the open that survived the seek gate. So immediately before revealing, compare
+      // against the frame the clone is actually showing and land there first. Each pass loops
+      // back through `seeked` → here; three attempts is plenty (warm seeks converge in one).
+      const cloneT = priority ? getCloneTimeRef.current?.() : null
+      if (cloneT != null && Math.abs(v.currentTime - cloneT) > 0.15 && resyncs < 3) {
+        resyncs++
+        seekLanded = false
+        seekTarget = Math.max(0, Math.min(cloneT + 0.05, (Number.isFinite(v.duration) ? v.duration : Infinity) - 0.05))
+        try { v.currentTime = seekTarget } catch { seekLanded = true }
+        return
+      }
       revealOnPaintedFrame()
     }
+    revealRef.current = maybeReveal
+    const onSeeked = () => {
+      if (Math.abs(v.currentTime - seekTarget) > 0.25) return // an intermediate seek — keep waiting
+      window.clearTimeout(seekFailsafe)
+      seekLanded = true
+      maybeReveal()
+    }
+    const onReady = () => {
+      measure()
+      startPlayback() // in sync with the clone, from the first moment it can be
+      maybeReveal()
+    }
+    v.addEventListener('seeked', onSeeked)
     v.addEventListener('timeupdate', onTime)
     v.addEventListener('loadeddata', onReady)
     v.addEventListener('canplay', onReady)
@@ -317,6 +390,8 @@ function LightboxVideo({ item, priority, onLoad, armed = true }: { item: DKLight
     const ro = new ResizeObserver(measure)
     if (v.parentElement) ro.observe(v.parentElement)
     return () => {
+      window.clearTimeout(seekFailsafe)
+      v.removeEventListener('seeked', onSeeked)
       v.removeEventListener('timeupdate', onTime)
       v.removeEventListener('loadeddata', onReady)
       v.removeEventListener('canplay', onReady)
@@ -368,7 +443,7 @@ function LightboxVideo({ item, priority, onLoad, armed = true }: { item: DKLight
  *  side. The base layer reuses the grid's already-loaded file (instant, from cache); a sharper
  *  variant (getHiResSrc) fades in on top once loaded — for every visible slide, so a swipe/nav
  *  always lands on a hi-res image. */
-function Slide({ item, offset, priority, hiRes = true, getHiResSrc, onLoad, showOutline = true, armed = true }: {
+function Slide({ item, offset, priority, hiRes = true, getHiResSrc, onLoad, showOutline = true, armed = true, getCloneTime }: {
   item: DKLightboxItem
   offset: string
   priority?: boolean
@@ -382,6 +457,8 @@ function Slide({ item, offset, priority, hiRes = true, getHiResSrc, onLoad, show
   /** Has the fly-in landed? The clip plays behind the flying clone either way; this only gates
    *  the REVEAL, so the modal clip cannot appear on top of a clone still in the air. */
   armed?: boolean
+  /** See LightboxVideo — the clone's currently-visible playhead, for the reveal-time sync. */
+  getCloneTime?: () => number | null
 }) {
   const [hiResLoaded, setHiResLoaded] = useState(false)
   const [baseLoaded, setBaseLoaded] = useState(false)
@@ -396,7 +473,7 @@ function Slide({ item, offset, priority, hiRes = true, getHiResSrc, onLoad, show
             inset 16px so it never bleeds to the very edge at rest (the margins live here, not on
             the clipped container, so they don't cut the slide short). */}
         <div className="absolute inset-y-0 inset-x-4">
-          <LightboxVideo item={item} priority={priority} onLoad={onLoad} armed={armed} />
+          <LightboxVideo item={item} priority={priority} onLoad={onLoad} armed={armed} getCloneTime={getCloneTime} />
         </div>
       </div>
     )
@@ -449,26 +526,57 @@ function Slide({ item, offset, priority, hiRes = true, getHiResSrc, onLoad, show
  *  had decoded a frame, else the item's own poster image, which always exists. The live <video>
  *  layers on top and covers this as soon as it has a real frame. Without it, the clone is
  *  transparent while the video seeks — a hole showing the scrim through it. */
-function FlightStill({ item, onPainted, hidden = false }: { item: DKLightboxItem; onPainted: () => void; hidden?: boolean }) {
+function FlightStill({ item, onPainted, hidden = false, repaintRef }: {
+  item: DKLightboxItem
+  onPainted: () => void
+  hidden?: boolean
+  /** Parent-held hook: repaint this still from the live clone <video>, so it can come BACK at
+   *  the handoff showing the current frame instead of the stale click frame (see below). */
+  repaintRef?: { current: ((v: HTMLVideoElement) => void) | null }
+}) {
+  // A CANVAS rather than an <img>, so its pixels can be refreshed. The still starts as the
+  // click-frame snapshot (flightPoster) and its only job used to end the moment the live video
+  // painted — it went to opacity 0 and stayed there, because Safari transiently drops video
+  // layers while re-compositing and this STALE frame showing through read as the picture
+  // jumping backwards. But hiding it opened a worse hole: at the handoff re-composite (modal
+  // container promoted, clone eventually dropped) a transiently-dropped video layer now had
+  // NOTHING beneath it but the scrim — the intermittent WHITE flash at the end of the open.
+  // The parent now repaints this canvas from the clone's live frame right before the handoff
+  // and un-hides it, so every re-composite window has current pixels underneath.
+  const canvasRef = useRef<HTMLCanvasElement>(null)
   const src = item.flightPoster || item.src
+  const onPaintedRef = useRef(onPainted)
+  useEffect(() => { onPaintedRef.current = onPainted })
+  useEffect(() => {
+    if (!src) return
+    const img = new window.Image()
+    img.onload = () => {
+      const c = canvasRef.current
+      if (!c) return
+      c.width = img.naturalWidth
+      c.height = img.naturalHeight
+      c.getContext('2d')?.drawImage(img, 0, 0)
+      onPaintedRef.current()
+    }
+    img.src = src
+  }, [src])
+  useEffect(() => {
+    if (!repaintRef) return
+    repaintRef.current = (v: HTMLVideoElement) => {
+      const c = canvasRef.current
+      if (!c || !v.videoWidth) return
+      if (c.width !== v.videoWidth) { c.width = v.videoWidth; c.height = v.videoHeight }
+      try { c.getContext('2d')?.drawImage(v, 0, 0) } catch { /* cross-origin frame — keep poster */ }
+    }
+    return () => { repaintRef.current = null }
+  }, [repaintRef])
   if (!src) return null
   return (
-    <img
-      src={src}
-      className="absolute inset-0 h-full w-full object-contain"
-      alt=""
+    <canvas
+      ref={canvasRef}
       aria-hidden
-      // Gone the moment the live video above it is actually painting.
-      //
-      // This still is a snapshot of the frame you CLICKED, and it never updates. It used to sit at
-      // full opacity under the clone for the entire flight — measured: by the end the video above it
-      // was 450ms of clip further on, while this was frozen at the click frame. Safari transiently
-      // drops the video layer while re-compositing the transform (proven at the handoff), and when
-      // it did, this stale frame showed through for exactly one frame: the picture jumped backwards
-      // and then corrected. Its only job is to cover the gap BEFORE the video paints; after that it
-      // is nothing but a stale frame waiting to be revealed.
+      className="absolute inset-0 h-full w-full object-contain"
       style={{ opacity: hidden ? 0 : 1 }}
-      onLoad={onPainted}
     />
   )
 }
@@ -538,7 +646,7 @@ function FlightVideo({ item, videoRef, onShown }: { item: DKLightboxItem; videoR
   )
 }
 
-export function DKLightbox({ item, index, total, onClose, onPrev, onNext, originRect, prevItem, nextItem, hasCaptions = true, showOutline = true, slowMo = false, getHiResSrc, onFlightPainted }: DKLightboxProps) {
+export function DKLightbox({ item, index, total, onClose, onPrev, onNext, originRect, prevItem, nextItem, hasCaptions = true, showOutline = true, slowMo = false, getHiResSrc, onFlightPainted, onSettled }: DKLightboxProps) {
   const caption = item.caption ?? item.alt ?? null
 
   // Every color routes through the --dk-* tokens (the root below carries .dk-scope, so they
@@ -557,6 +665,17 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
   // Has the clone's live <video> actually painted? Once it has, the stale still beneath it is
   // dropped (see FlightStill) — it can only do harm from that point on.
   const [cloneVideoShown, setCloneVideoShown] = useState(false)
+  // Ref mirror for getCloneTime, which is read from inside LightboxVideo's long-lived effect.
+  const cloneVideoShownRef = useRef(false)
+  useEffect(() => { cloneVideoShownRef.current = cloneVideoShown }, [cloneVideoShown])
+  // The playhead of the frame the CLONE is currently showing: its live video's time once that
+  // has painted, else the frozen poster's captured time. The modal clip syncs to this right
+  // before it reveals (see the FINAL SYNC note in LightboxVideo).
+  const getCloneTime = useCallback(() => {
+    const cv = cloneVideoRef.current
+    if (cv && cloneVideoShownRef.current) return cv.currentTime
+    return item.videoTime ?? 0
+  }, [item.videoTime])
   // First-real-frame signal for the clone — fired once; the opener hides the origin element
   // on it, so the origin→clone handoff is paint-to-paint with no blink.
   const flightPaintedRef = useRef(false)
@@ -608,11 +727,48 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
   // There is no way to make Safari promote the layer faster, so instead nothing is ever uncovered:
   // the clone stays on top across the swap.
   const [cloneGone, setCloneGone] = useState(false)
+  const cloneGoneRef = useRef(false)
+  const onSettledRef = useRef(onSettled)
+  useEffect(() => { onSettledRef.current = onSettled })
+  // Hide the clone (it stays MOUNTED — see the render note) and declare the open settled.
+  // Shared by the overlap timer below and commit(), which must drop the clone instantly when a
+  // nav starts sliding the track underneath it.
+  const settleClone = useCallback(() => {
+    if (cloneGoneRef.current) return
+    cloneGoneRef.current = true
+    setCloneGone(true)
+    // The clone's job is over; its video needn't keep decoding in parallel with the modal's.
+    cloneVideoRef.current?.pause()
+    // The open has fully settled: the modal owns the screen. The opener restores the hidden
+    // origin element on this signal (see DKLightboxProps.onSettled).
+    onSettledRef.current?.()
+  }, [])
+  // The overlap grew from two painted frames to 300ms. Two frames covered Chrome, but Safari's
+  // transient layer washout at the handoff (see below) can outlive them — and since the clone
+  // and the modal are frame-locked by reveal time (see LightboxVideo's FINAL SYNC), a longer
+  // overlap is invisible. It ends EARLY the moment a nav needs the track (commit calls
+  // settleClone), so interaction never fights it.
   useEffect(() => {
     if (!containerVisible || cloneGone) return
-    const id = requestAnimationFrame(() => requestAnimationFrame(() => setCloneGone(true)))
-    return () => cancelAnimationFrame(id)
-  }, [containerVisible, cloneGone])
+    // 300ms ONLY for clips (the Safari video-layer washout the overlap exists for; clone and
+    // modal are frame-locked so it's invisible). Images get the original two-frames-worth:
+    // an image clone fits by the THUMBNAIL's aspect, and when that differs a hair from the
+    // slide's intrinsic-aspect letterbox, a long overlap shows two sizes stacked.
+    const id = window.setTimeout(settleClone, item.videoSrc ? 300 : 35)
+    return () => window.clearTimeout(id)
+  }, [containerVisible, cloneGone, settleClone])
+  // At the moment of the handoff, refresh the still UNDER the clone's video with the clone's
+  // current frame and bring it back (FlightStill was hidden once the live video painted). Every
+  // layer Safari might transiently drop during the handoff re-composite now has current pixels
+  // beneath it instead of the white scrim.
+  const stillRepaintRef = useRef<((v: HTMLVideoElement) => void) | null>(null)
+  const [stillResurfaced, setStillResurfaced] = useState(false)
+  useEffect(() => {
+    if (!containerVisible || stillResurfaced) return
+    const cv = cloneVideoRef.current
+    if (cv) stillRepaintRef.current?.(cv)
+    setStillResurfaced(true)
+  }, [containerVisible, stillResurfaced])
   // Where the flying-clone open lands: the photo's contain-fitted rect inside the container.
   // Aspect comes from the thumbnail's rect (originRect) — always known, whereas declared
   // width/height may be absent, which would make the fit NaN and the photo never reveal.
@@ -648,7 +804,9 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
   // follows a downward drag to dismiss. `axis` locks to whichever the finger leads with.
   const x = useMotionValue(0)
   const yDrag = useMotionValue(0)
-  const dragOpacity = useTransform(yDrag, [0, 240], [1, 0.2])
+  // Fades to FULLY transparent by 280px: the release animation only needs to travel far
+  // enough for the content to dissolve, not escort it to the bottom of the screen.
+  const dragOpacity = useTransform(yDrag, [0, 280], [1, 0])
 
   // SWIPE DOWN UNDOES THE OPEN, rather than just sliding the photo away.
   //
@@ -658,18 +816,33 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
   // the modal unmounted. Dragging down now runs the open transition BACKWARDS in step with the
   // finger: the scrim dissolves and the page underneath fades up, so you are literally pulling the
   // page back into view. Let go early and it springs back, taking the reveal with it.
-  const siblingsRef = useRef<HTMLElement[]>([])
+  // The in-document veil the iOS bottom bar actually blurs — created by the backdrop
+  // effect below; the swipe-down reveal drives its opacity back out.
+  const veilRef = useRef<HTMLDivElement | null>(null)
   const REVEAL_DRAG = 260 // px of downward travel that fully restores the page
+  // The open page-fade's rAF id, so a downward drag can take the opacity channel over from it
+  // (see below). Written every frame by the page-fade loop.
+  const openFadeRafRef = useRef(0)
   useEffect(() => {
-    if (!animDone) return // the open is still running the same properties; don't fight it
+    // NOT gated on animDone. It used to be ("the open is still running the same properties;
+    // don't fight it") — but on a phone the common gesture is tap, then swipe down immediately,
+    // BEFORE the ~350ms fly-in lands. With the subscription not yet made, the drag moved the
+    // photo while the page stayed frozen at whatever opacity the open fade had reached, then
+    // snapped visible when the modal unmounted — "it just instantly reappears". The fight is
+    // resolved the other way now: at rest (v=0) this never writes, and the moment a real drag
+    // begins it CANCELS the open fade's rAF loop and owns the opacity channel from there.
     const scrim = scrimRef.current
     const apply = (v: number) => {
+      if (v <= 0) return // at rest: leave the open fade alone
+      cancelAnimationFrame(openFadeRafRef.current)
       const t = Math.min(1, Math.max(0, v / REVEAL_DRAG))
       if (scrim) scrim.style.opacity = String(1 - t)
-      for (const el of siblingsRef.current) el.style.opacity = String(t)
+      // The veil — the in-document layer the iOS bottom bar blurs — tracks the scrim exactly,
+      // so the strip behind the bar fades with the finger like the rest of the modal.
+      if (veilRef.current) veilRef.current.style.opacity = String(Math.max(VEIL_MIN_OPACITY, 1 - t))
     }
     return yDrag.on('change', apply)
-  }, [yDrag, animDone])
+  }, [yDrag])
   const trackRef = useRef<HTMLDivElement>(null)
   const startX = useRef(0)
   const startY = useRef(0)
@@ -760,83 +933,101 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
     }
   }, [])
 
-  // Safari's translucent toolbar blurs the scrolled DOCUMENT beneath it and a fixed overlay does
-  // NOT occlude that view — so the page keeps "peering through" the bar no matter how opaque the
-  // modal is. The only reliable cure is to take the page content out of the render while open. The
-  // modal is portaled to <body>, so fade every OTHER top-level body child to opacity 0 (at 0 it
-  // paints nothing → the toolbar is left blurring the bare, modal-coloured <body>). Opacity keeps
-  // layout, so there's no reflow or scroll jump. The fade runs on the SAME spring as the open
-  // fly-in, so in the toolbar the page dissolves to solid in step with the photo landing rather
-  // than cutting out. A deep-link open (no originRect / no fly-in) has nothing to sync to, so it
-  // hides instantly. All restored on close; no-ops safely if the modal isn't a direct child of
-  // <body>.
+  // Safari's translucent bottom bar blurs the scrolled DOCUMENT beneath it, and a fixed
+  // overlay does NOT occlude that view — so no matter how opaque the modal was, the page kept
+  // peering through the bar. The cure used to be fading every other <body> child to ~0 and
+  // letting the bar blur the bare modal-coloured body. That held until the swipe-down reveal
+  // exposed its weakness: the bar rebuilds its blur of REAPPEARING in-document content
+  // LAZILY (~1s), so the strip behind it sat as a flat modal-coloured box and popped late —
+  // while a tap-close (instant unmount) updated instantly. Warm-layer opacity floors and
+  // post-teardown repaint nudges did not move it; reappearing content is simply the slow path.
+  //
+  // So nothing reappears anymore. The page stays at FULL opacity the whole time, and a VEIL —
+  // an absolutely-positioned in-document element (NOT fixed, so the bar provably samples it)
+  // covering the viewport behind the modal — carries the modal colour instead. The open fades
+  // the veil IN over the unchanged page (perceived content visibility is (1-eased)² either
+  // way — scrim over veil now, scrim over fading page before — so the look is identical), and
+  // the swipe-down reveal fades it OUT: a DISAPPEARING in-document layer, the direction the
+  // bar's backdrop handles live. A tap-close removes it with the unmount, which was already
+  // instant. The veil floors at VEIL_MIN_OPACITY so its layer never tears down mid-session.
   useLayoutEffect(() => {
     const root = rootRef.current
     if (!root || root.parentElement !== document.body) return
-    const siblings = Array.from(document.body.children).filter(
-      (el): el is HTMLElement =>
-        el !== root && el instanceof HTMLElement &&
-        el.tagName !== 'SCRIPT' && el.tagName !== 'STYLE' && el.tagName !== 'LINK',
-    )
-    siblingsRef.current = siblings // the swipe-to-dismiss reveal drives these back in
-    // One rAF loop drives the whole open transition on the MAIN THREAD: it fades the page content OUT
-    // and the backdrop scrim IN, in step. Why a manual rAF and not a WAAPI/CSS opacity animation:
-    // Safari's toolbar samples the MAIN-THREAD paint, so a GPU-composited opacity fade never registers
-    // there and the page bleed reads as an instant cut. A per-frame inline-opacity write IS a main-
-    // thread paint change, so the page visibly dissolves out of the toolbar. (The scrim only needs to
-    // read in the main viewport, but sharing the loop keeps the two perfectly in sync.) A deep-link
-    // open (no fly-in) or reduced motion cuts instantly. Cancelling the rAF + clearing inline opacity
-    // on close restores everything cleanly — nothing to race with React's dev double-mount.
     const scrim = scrimRef.current
-    if (!originRect || reduceMotion) {
-      siblings.forEach((el) => { el.style.opacity = '0' })
-      return () => { siblings.forEach((el) => { el.style.opacity = '' }) } // scrim stays opaque (instant)
+    const veil = document.createElement('div')
+    veil.setAttribute('aria-hidden', 'true')
+    // Viewport-covering with 200px of slack both ends (bar geometry, rubber-banding, rotation
+    // mid-gesture); re-fitted on resize. Scroll is locked while open, so top stays valid.
+    const fitVeil = () => {
+      veil.style.top = `${window.scrollY - 200}px`
+      veil.style.height = `${window.innerHeight + 400}px`
     }
-    // THE PAGE MAY NOT START DISAPPEARING BEFORE ITS REPLACEMENT IS ON SCREEN.
-    //
-    // This was a Safari-only flash right after the click. The loop used to start at mount, so the
-    // page began dissolving while the flying clip was still decoding and seeking — and the clicked
-    // asset is hidden the moment the clone paints, so for a few frames there was nothing where the
-    // asset had been. Measured at 60fps in Safari: the page's text contrast collapsed across two
-    // frames (of a 350ms fade!), and the clip did not paint for another three. The screen popped to
-    // near-white in the gap. Chrome's commit is fast enough that the same gap is a fraction of a
-    // frame, which is why it never showed there.
-    //
-    // `flightPainted` is fired by the clone's first real painted frame, so gating the loop on it
-    // means the replacement is provably visible before anything is taken away.
-    //
-    // The scrim is hidden HERE, before the gate, and that placement is load-bearing. The scrim's
-    // default state is opacity 1 — a full-screen opaque layer over the page. Hiding it inside the
-    // gate left it fully opaque for the ~40ms until the clone painted: the entire screen went
-    // solid, then the scrim snapped to 0 and eased back in. It must be transparent from the first
-    // painted frame; only the LOOP waits.
+    Object.assign(veil.style, {
+      position: 'absolute',
+      left: '0',
+      right: '0',
+      // Under the modal (z-50), above everything the page stacks (the header is 45).
+      zIndex: '49',
+      pointerEvents: 'none',
+      // The scrim's own resolved colour — the veil is the scrim's in-document twin.
+      backgroundColor: scrim ? getComputedStyle(scrim).backgroundColor : '#fff',
+      opacity: !originRect || reduceMotion ? '1' : String(VEIL_MIN_OPACITY),
+    })
+    fitVeil()
+    window.addEventListener('resize', fitVeil)
+    document.body.appendChild(veil)
+    veilRef.current = veil
+    return () => {
+      window.removeEventListener('resize', fitVeil)
+      veil.remove()
+      veilRef.current = null
+      // Belt and suspenders for any straggler blur the bar still holds after teardown: two
+      // frames later (after the opener's exact scroll restore), move the page 1px and put it
+      // back — the backdrop provably tracks scroll.
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const sy = window.scrollY
+        window.scrollTo(window.scrollX, sy > 0 ? sy - 1 : sy + 1)
+        requestAnimationFrame(() => window.scrollTo(window.scrollX, sy))
+      }))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // The open transition: one main-thread rAF loop fades the scrim and the veil in together.
+  // Main-thread inline writes, not WAAPI/CSS: the bar samples the main-thread paint, so a
+  // composited fade would read there as a cut. Deep-link opens and reduced motion skip the
+  // loop entirely (the veil mounted at 1, the scrim keeps its default opaque state).
+  useLayoutEffect(() => {
+    if (!originRect || reduceMotion) return
+    const scrim = scrimRef.current
+    const veil = veilRef.current
+    // THE PAGE MAY NOT START DISAPPEARING BEFORE ITS REPLACEMENT IS ON SCREEN: the loop is
+    // gated on the clone's first painted frame (flightPainted). The scrim, whose default
+    // state is opaque, is made transparent HERE — before the gate — or the whole screen goes
+    // solid for the ~40ms until the clone paints. That placement is load-bearing.
     if (scrim) scrim.style.opacity = '0' // start transparent; the loop eases it back to 1
     if (!flightPainted) return
     const DURATION = slowMo ? 3000 : 350 // shift-click slow-mo stretches the fade with the spring
-    // Integrate CLAMPED deltas rather than reading the wall clock.
-    //
-    // Safari drops frames through the modal's first commit, so consecutive rAF callbacks can be
-    // ~85ms apart. A fade driven by `now - startT` teleports across that gap — which is the other
-    // half of why the page vanished in two frames. Capping each step at ~2 frames means a dropped
-    // frame costs the fade a little wall time instead of jumping it forward; a stall can never turn
-    // the dissolve into a cut.
+    // Integrate CLAMPED deltas rather than reading the wall clock: Safari drops frames through
+    // the modal's first commit, and a wall-clock fade teleports across the gap — a stall can
+    // never turn this dissolve into a cut.
     let last = 0
     let elapsed = 0
-    let raf = 0
     const frame = (now: number) => {
-      if (!last) { last = now; raf = requestAnimationFrame(frame); return }
+      if (!last) { last = now; openFadeRafRef.current = requestAnimationFrame(frame); return }
       elapsed += Math.min(now - last, 32)
       last = now
       const t = Math.max(0, Math.min(1, elapsed / DURATION))
       const eased = 1 - (1 - t) ** 3 // ease-out cubic — fast, responsive
-      for (const el of siblings) el.style.opacity = String(1 - eased) // page fades OUT
-      if (scrim) scrim.style.opacity = String(eased)                  // backdrop fades IN
-      if (t < 1) raf = requestAnimationFrame(frame)
+      if (veil) veil.style.opacity = String(Math.max(VEIL_MIN_OPACITY, eased)) // the bar's white rises
+      if (scrim) scrim.style.opacity = String(eased)                          // the viewport's white, same curve
+      if (t < 1) openFadeRafRef.current = requestAnimationFrame(frame)
     }
-    raf = requestAnimationFrame(frame)
+    // The id lives in openFadeRafRef (not a local) so the swipe-down reveal can cancel this
+    // loop the moment a drag starts and own the opacity channel mid-open.
+    openFadeRafRef.current = requestAnimationFrame(frame)
     return () => {
-      cancelAnimationFrame(raf)
-      for (const el of siblings) el.style.opacity = ''
+      cancelAnimationFrame(openFadeRafRef.current)
       if (scrim) scrim.style.opacity = ''
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -870,6 +1061,9 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
     // Pressed before the open fly-in finished: reveal the container now so the slide animates
     // the real track rather than swiping behind the flying clone.
     if (!animDone) flushSync(() => setAnimDone(true))
+    // The nav is about to slide the track: the (possibly still-overlapping) stationary clone
+    // must not sit on top of it. Ends the 300ms handoff overlap early.
+    settleClone()
     const fromX = x.get() + dir * width()
     const target = dir === 1 ? nextItem : prevItem
     x.stop()
@@ -885,8 +1079,14 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
 
   // Slide the image down and off, then unmount.
   const dismiss = () => {
-    animate(yDrag, window.innerHeight, { duration: 0.2, ease: 'easeIn' })
-    window.setTimeout(onClose, 190)
+    // A SHORT drop, not a ride to the bottom of the screen: the content is fully transparent
+    // by 280px of travel (dragOpacity), so animating to window.innerHeight just meant watching
+    // nothing move for most of the duration. Drop a further ~200px from wherever the finger
+    // let go — always past both the fade end and the page-restore distance (REVEAL_DRAG), so
+    // the dissolve completes and the page beneath is fully back before the unmount.
+    const target = Math.max(REVEAL_DRAG + 60, yDrag.get() + 200)
+    animate(yDrag, target, { duration: 0.16, ease: 'easeIn' })
+    window.setTimeout(onClose, 150)
   }
 
   // Arrow keys animate through the same track as swipe / on-screen arrows.
@@ -914,6 +1114,9 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
     const dy = e.touches[0].clientY - startY.current
     if (axis.current === null && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
       axis.current = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y'
+      // A recognized gesture is about to move the media out from under the (possibly
+      // still-overlapping) stationary clone — end the handoff overlap now.
+      settleClone()
       // Remember WHERE the axis locked. The 8px the finger travelled to trigger the lock is not
       // drag — it is the gesture being recognised. Feeding the raw delta in meant the photo
       // teleported those 8px the instant the lock fired, and then tracked the finger. That initial
@@ -976,7 +1179,10 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
           hid it. */}
       <div ref={scrimRef} className="absolute inset-0 -z-10" style={{ backgroundColor: BG }} />
       {/* Inner layer carries the swipe-down-to-dismiss transform. */}
-      <m.div className="relative flex flex-1 flex-col min-h-0" style={{ y: yDrag, opacity: dragOpacity }}>
+      {/* The swipe used to translate THIS whole layer — chrome included. The drag now lives
+          on the media area alone (and the rail fades in place): the close button and arrows
+          hold still while the photo is pulled away (Dave's call, 2026-07-24). */}
+      <div className="relative flex flex-1 flex-col min-h-0">
       {/* Close — sits above the image; the surrounding layer passes clicks through. */}
       <m.div
         className="absolute inset-0 pointer-events-none z-30"
@@ -984,6 +1190,12 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
         animate={{ opacity: 1 }}
         transition={{ delay: !animDone ? 0.25 : 0, duration: 0.2 }}
       >
+        {/* Fades with the drag but does NOT move. It was the last opaque thing on the modal
+            at unmount, and iOS 26's bottom-bar backdrop cache held a snapshot of it (plus the
+            modal's white field) for ~a second after a swipe dismiss — a ghost close button.
+            Fully-faded chrome means any stale snapshot is of nothing. The outer overlay owns
+            the entrance opacity, so the drag binding needs its own layer. */}
+        <m.div className="absolute inset-0" style={{ opacity: dragOpacity }}>
         <button
           onClick={(e) => { e.stopPropagation(); onClose() }}
           aria-label="Close"
@@ -991,13 +1203,14 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
         >
           <IconClose />
         </button>
+        </m.div>
       </m.div>
 
       {/* Image area — full width so the slide track can carry an asset fully off-screen; the 16px
           side margins live on each slide's inner box (see Slide), not here, so they never clip the
           animation. A slim pt-2 keeps breathing room up top; no bottom padding lets the photo grow
           toward the caption rail. */}
-      <div className="flex-1 min-h-0 flex pt-2">
+      <m.div className="flex-1 min-h-0 flex pt-2" style={{ y: yDrag, opacity: dragOpacity }}>
         <div
           ref={containerRef}
           className="flex-1 min-w-0 relative overflow-hidden"
@@ -1034,19 +1247,22 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
               getHiResSrc={getHiResSrc}
               showOutline={showOutline}
               armed={animDone}
+              getCloneTime={getCloneTime}
               onLoad={() => setImageLoaded(true)}
             />
             {nextItem && animDone && <Slide key={nextItem.src} item={nextItem} offset="100%" hiRes getHiResSrc={getHiResSrc} showOutline={showOutline} />}
           </m.div>
         </div>
-      </div>
+      </m.div>
 
       {/* Single rail — nav + caption + exif on the same surface as the photo, no divider
           (transparent, so the lightbox background shows through as one continuous field), so the
           photo is never obstructed. Clicks here don't close. Prev/next flank a centered caption;
           exif trails on a muted mono line. No counter. */}
-      <div
+      <m.div
         onClick={(e) => e.stopPropagation()}
+        // Fades with the drag but does NOT move — only the media travels.
+        style={{ opacity: dragOpacity }}
         className="dk-rail-foot shrink-0 flex items-center gap-3 px-3.5 pt-3"
       >
         {index > 0 ? (
@@ -1102,13 +1318,19 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
         ) : (
           <span className="h-11 w-11 shrink-0" />
         )}
-      </div>
+      </m.div>
 
-      {!cloneGone && cloneTarget && originRect && (
+      {cloneTarget && originRect && (
         <m.div
           className="absolute overflow-hidden pointer-events-none"
           // Sits at the photo's final rect; a transform (translate + uniform scale from the
           // thumbnail) does the flight, so only the compositor works — no per-frame layout.
+          //
+          // The clone STAYS MOUNTED at opacity 0 after the handoff instead of unmounting.
+          // Unmounting it forced Safari to tear down and re-composite the layer tree at the
+          // exact moment the modal video's fresh layer was still being promoted — the transient
+          // "not fully opaque" washout that read as a white flash at the end of the open. An
+          // opacity flip destroys nothing; the whole subtree simply leaves with the modal.
           style={{
             zIndex: 20,
             left: cloneTarget.left,
@@ -1116,6 +1338,7 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
             width: cloneTarget.width,
             height: cloneTarget.height,
             transformOrigin: '0 0',
+            opacity: cloneGone ? 0 : 1,
           }}
           initial={{
             x: originRect.left - cloneTarget.left,
@@ -1151,7 +1374,14 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
               // Long clips are the ones that show the hole: the clone may seek tens of seconds in,
               // which Safari takes real time to do. Short loops seek almost instantly.
               <>
-                <FlightStill item={item} onPainted={fireFlightPainted} hidden={cloneVideoShown} />
+                <FlightStill
+                  item={item}
+                  onPainted={fireFlightPainted}
+                  // Hidden while the live video flies (its click frame goes stale within
+                  // frames), then resurfaced with FRESH pixels for the handoff window.
+                  hidden={cloneVideoShown && !stillResurfaced}
+                  repaintRef={stillRepaintRef}
+                />
                 <FlightVideo item={item} videoRef={cloneVideoRef} onShown={() => setCloneVideoShown(true)} />
               </>
             ) : item.flightPoster ? (
@@ -1183,7 +1413,7 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
           )}
         </m.div>
       )}
-      </m.div>
+      </div>
     </m.div>
   )
 }
@@ -1258,6 +1488,10 @@ export function useDKLightbox(items: DKMediaItem[], options: DKLightboxOptions =
   // The clicked element — hidden while open so it doesn't sit under the fly-in clone (the clone
   // IS that asset moving into the modal). visibility keeps its layout slot, so nothing reflows.
   const originElRef = useRef<HTMLElement | null>(null)
+  // The page's scroll position at open. Close restores it EXACTLY: traversing the modal must not
+  // move the reader — restoreFocus's scrollIntoView on the closed-on element was relocating the
+  // page after a few swipes.
+  const scrollPosRef = useRef<{ x: number; y: number } | null>(null)
   // The last item shown, surviving close's setSelectedIndex(null) — close hands focus back to
   // ITS element (not the entry one; the viewer may have arrowed far from where they came in).
   const latestIndexRef = useRef<number | null>(null)
@@ -1293,6 +1527,8 @@ export function useDKLightbox(items: DKMediaItem[], options: DKLightboxOptions =
     // and focusing an inert element is a silent no-op. One rAF later the dialog has unmounted and
     // its cleanup has lifted inert, so the focus actually takes.
     const withRing = keyboardModeRef.current
+    const pos = scrollPosRef.current
+    scrollPosRef.current = null
     requestAnimationFrame(() => {
       const el = idx !== null ? optionsRef.current.getOriginEl?.(idx) ?? null : null
       if (el) {
@@ -1300,6 +1536,10 @@ export function useDKLightbox(items: DKMediaItem[], options: DKLightboxOptions =
       } else if (document.activeElement instanceof HTMLElement) {
         document.activeElement.blur()
       }
+      // AFTER restoreFocus (whose scrollIntoView may have moved the page toward the closed-on
+      // element): put the reader back precisely where they were when they opened the modal.
+      // Same task, so only the final position ever paints.
+      if (pos) window.scrollTo(pos.x, pos.y)
     })
   }, [])
   const prev = useCallback(() => {
@@ -1329,6 +1569,7 @@ export function useDKLightbox(items: DKMediaItem[], options: DKLightboxOptions =
     setSlowMo(!!e?.shiftKey)
     // A keyboard-activated button fires click with detail 0 — that's a keyboard open.
     keyboardModeRef.current = (e?.detail ?? 1) === 0
+    scrollPosRef.current = { x: window.scrollX, y: window.scrollY }
     const data: Partial<DKLightboxItem> = {}
     if (el) {
       setOriginRect(el.getBoundingClientRect())
@@ -1451,6 +1692,12 @@ export function useDKLightbox(items: DKMediaItem[], options: DKLightboxOptions =
             getHiResSrc={options.getHiResSrc}
             onFlightPainted={() => {
               if (originElRef.current) originElRef.current.style.visibility = 'hidden'
+            }}
+            onSettled={() => {
+              // The modal fully covers the page now — put the tapped element back so a
+              // swipe-down dismiss reveals it instead of a blank hole. close() re-clearing
+              // visibility is a harmless no-op.
+              if (originElRef.current) originElRef.current.style.visibility = ''
             }}
             prevItem={selectedIndex > 0 ? toLightboxItem(selectedIndex - 1) : null}
             nextItem={selectedIndex < items.length - 1 ? toLightboxItem(selectedIndex + 1) : null}
