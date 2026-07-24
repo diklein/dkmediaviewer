@@ -423,7 +423,7 @@ function LightboxVideo({ item, priority, onLoad, armed = true, getCloneTime }: {
       {showBar && bar && ready && (
         <m.div
           aria-hidden
-          className="absolute z-20 h-0.5 overflow-hidden rounded-full"
+          className="absolute z-20 h-0.5 overflow-hidden"
           style={{ width: bar.w, left: bar.left, top: bar.top, background: 'color-mix(in srgb, currentColor 22%, transparent)' }}
           // Half a second, accelerating (easeIn), and it only starts once the fly-in has landed —
           // the bar does not mount until the clip reveals, which is gated on the open animation
