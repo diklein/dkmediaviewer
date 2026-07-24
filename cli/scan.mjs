@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /* dkmediaviewer scan — point it at a folder of images, get a ready-to-render items.json.
  *
- *   npx dkmediaviewer scan ./public/photos
- *   npx dkmediaviewer scan ./public/photos --base /photos --out src/lib/media-items.json
+ *   npx @diklein/dkmediaviewer scan ./public/photos
+ *   npx @diklein/dkmediaviewer scan ./public/photos --base /photos --out src/lib/media-items.json
  *
  * For every image it reads intrinsic dimensions and real camera EXIF (make, model, shutter,
  * aperture, focal length, ISO) straight from the file — nothing is hand-typed. Videos
@@ -25,7 +25,7 @@ const HELP = `dkmediaviewer, the companion CLI for the DKMediaViewer component
 https://diklein.com/dkmediaviewer
 
 Usage
-  npx dkmediaviewer scan <folder> [options]
+  npx @diklein/dkmediaviewer scan <folder> [options]
 
 Scans a folder of images and writes a ready-to-render items.json for
 <DKMediaViewer>. Dimensions and camera EXIF (make, model, shutter, aperture,
@@ -92,7 +92,7 @@ async function main() {
   const folder = args._[0]
   if (!folder) {
     console.error('usage: dkmediaviewer scan <folder> [--base /public-url-prefix] [--out items.json]')
-    console.error('       npx dkmediaviewer --help for details')
+    console.error('       npx @diklein/dkmediaviewer --help for details')
     process.exit(1)
   }
 

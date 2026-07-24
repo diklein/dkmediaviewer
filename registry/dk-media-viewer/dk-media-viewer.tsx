@@ -5,7 +5,7 @@
  *   <DKMediaViewer items={items} />
  *
  * Items are plain data (see types.ts) — hand-written, CMS-mapped, or generated with
- * `npx dkmediaviewer scan ./public/photos`. Photos render as lazy <img>s (or through your own
+ * `npx @diklein/dkmediaviewer scan ./public/photos`. Photos render as lazy <img>s (or through your own
  * renderImage slot, e.g. next/image); videos autoplay muted in the grid and hand off
  * frame-accurately to the lightbox player when clicked. */
 

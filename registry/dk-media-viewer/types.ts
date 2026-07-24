@@ -1,7 +1,7 @@
 /* DKMediaViewer — the data contract.
  *
  * One item = one photo or one video. Hand-write the array, generate it with
- * `npx dkmediaviewer scan ./public/photos`, or map it from your CMS — the viewer
+ * `npx @diklein/dkmediaviewer scan ./public/photos`, or map it from your CMS — the viewer
  * only ever sees this shape. Everything beyond `src` is optional and degrades
  * cleanly: no exif → no spec line, no caption → no caption well, no dimensions
  * → the layout measures the rendered element instead. */

@@ -59,7 +59,7 @@ Optional data like EXIF and caption degrade elegantly.
 You don't have to write `media-items.json` yourself. Point the CLI at your photo folder and it generates the file for you. Dimensions and camera settings come from the EXIF embedded in each image.
 
 ```bash
-npx dkmediaviewer scan ./public/photos --out src/lib/media-items.json
+npx @diklein/dkmediaviewer scan ./public/photos --out src/lib/media-items.json
 ```
 
 Videos need a poster image because it gives a video something to show instantly (in the grid, mid-animation, or when a device blocks autoplay) instead of a black box while the video loads. Give a video and an image the same name, like `clip.mp4` and `clip.jpg`, and the scanner joins them into a single video item. The clip plays and the image is its poster frame.
