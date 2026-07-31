@@ -11,7 +11,6 @@ import { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'react
 import { flushSync } from 'react-dom'
 import { createPortal } from 'react-dom'
 import {
-  AnimatePresence,
   LazyMotion,
   domAnimation,
   m,
@@ -800,6 +799,75 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
   const capCaption = captionItem.caption ?? null
   const capExif = formatExif(captionItem.exif)
 
+  // Desktop off-photo detection: the glass material exists for text ON the photo. When
+  // the contain-fitted photo doesn't reach the card (short landscape photo, tall window),
+  // the card drops to theme ink — the same treatment mobile always uses. Geometry is
+  // computed (contain fit vs the card's text top) rather than measured off the img, so
+  // it works mid-flight, after nav, and independent of image load state.
+  const [capOnPhoto, setCapOnPhoto] = useState(false)
+  const capCardRef = useRef<HTMLDivElement | null>(null)
+  const measureCapRef = useRef<() => void>(() => {})
+  useEffect(() => {
+    const measure = () => {
+      // Contain-fit math from LIVE rects — never the img's own rect: the slide <img>
+      // fills the asset box (object-contain), so its element rect is the full-height
+      // area and its bottom sits at the viewport bottom no matter how short the photo
+      // renders. The container rect already carries every inset the layout owns; the
+      // only constant left is the slide's structural 16px side margins (inset-x-4).
+      const box = containerRef.current?.getBoundingClientRect()
+      const dock = dockRef.current
+      const root = rootRef.current
+      const wrap = capCardRef.current?.parentElement?.getBoundingClientRect()
+      if (!box || !wrap || !dock || !root || box.height === 0) return
+      // Declared dimensions may be absent on an item — without an aspect there is no
+      // verdict, and ties go to ink (glass is the exception that needs to earn itself).
+      if (!captionItem.width || !captionItem.height) { setCapOnPhoto(false); return }
+      const assetW = Math.max(0, box.width - SLIDE_INSET * 2)
+      // captionItem's aspect, NOT the item prop's: captionItem flips synchronously at a
+      // nav commit — it IS the photo the card is captioning, which is the one the
+      // material must match, even while the slide is still travelling.
+      const dispH = Math.min(box.height, assetW * (captionItem.height / captionItem.width))
+      const photoBottom = box.top + (box.height + dispH) / 2
+      // Compare against the card's RESTING position, not where it currently is: during
+      // the entrance the card is still below the fold, and measuring it there said
+      // "off photo" until the animation ended — the glass popped in at landing. The
+      // rest is knowable from frame one: the dock parks at the root's bottom edge
+      // (offsetHeight ignores the entrance transform), and the wrapper's offset inside
+      // the dock is transform-invariant.
+      const dockRect = dock.getBoundingClientRect()
+      const wrapRestTop = root.getBoundingClientRect().bottom - dock.offsetHeight + (wrap.top - dockRect.top)
+      setCapOnPhoto(photoBottom > wrapRestTop + 10)
+    }
+    measureCapRef.current = measure
+    // rAF: run after the layout from an item/caption swap has settled.
+    const raf = requestAnimationFrame(measure)
+    const late = window.setTimeout(measure, 450) // after the nav spring lands
+    window.addEventListener('resize', measure)
+    return () => { cancelAnimationFrame(raf); window.clearTimeout(late); window.removeEventListener('resize', measure) }
+  }, [item, captionItem])
+  // Publish the dock's live height as --dk-dock-h so the mobile media area can reserve
+  // space under the photo (see max-sm:pb below). Measured, not guessed: caption length
+  // and wrap count vary per item. offsetHeight ignores the entrance transform.
+  // LAYOUT effect with a synchronous first apply, and declared BEFORE the targetRect
+  // measurement: the fly-in target must be measured with the padding already in place,
+  // or the clone lands in the unpadded area and the photo jumps up at handoff.
+  const dockRef = useRef<HTMLDivElement | null>(null)
+  // Has the dock's entrance finished? While false, the dock's children carry the
+  // .dk-dock-enter rise animation; flipping true removes the class so the keyed
+  // caption card can remount on nav without replaying the entrance.
+  const [dockEntered, setDockEntered] = useState(false)
+  const dockRiseClass = dockEntered ? '' : 'dk-dock-enter '
+  useLayoutEffect(() => {
+    const dock = dockRef.current
+    const root = rootRef.current
+    if (!dock || !root) return
+    const apply = () => root.style.setProperty('--dk-dock-h', `${dock.offsetHeight}px`)
+    apply()
+    const ro = new ResizeObserver(apply)
+    ro.observe(dock)
+    return () => ro.disconnect()
+  }, [])
+
   // Swipe track: `x` follows the finger horizontally (commit = navigate); `yDrag`
   // follows a downward drag to dismiss. `axis` locks to whichever the finger leads with.
   const x = useMotionValue(0)
@@ -807,6 +875,41 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
   // Fades to FULLY transparent by 280px: the release animation only needs to travel far
   // enough for the content to dissolve, not escort it to the bottom of the screen.
   const dragOpacity = useTransform(yDrag, [0, 280], [1, 0])
+
+  // GLASS FRESHNESS. WebKit takes a SAMPLE of the backdrop behind the card and can
+  // keep serving it when the only thing changing underneath is a composited transform
+  // — exactly what a slide is — so after a nav the glass kept the PREVIOUS photo's
+  // colors (Chromium re-samples fine). Every frame the track moves, nudge the card's
+  // backdrop-filter between two imperceptibly different blur radii: a filter change
+  // forces a fresh sample, so the glass is live during the slide and the settle frame
+  // (itself a change) is always fresh. Inline overrides only while the glass CSS is
+  // actually in effect (data-on-photo + the sm breakpoint) — an inline filter on the
+  // ink card would conjure phantom glass.
+  const nudgeGlassRef = useRef<() => void>(() => {})
+  useEffect(() => {
+    let flip = 0
+    const nudge = () => {
+      const el = capCardRef.current
+      if (!el) return
+      if (!el.hasAttribute('data-on-photo') || window.innerWidth < 640) {
+        el.style.removeProperty('-webkit-backdrop-filter')
+        el.style.removeProperty('backdrop-filter')
+        return
+      }
+      flip ^= 1
+      const v = flip ? 'blur(20.02px) saturate(1.8)' : 'blur(20px) saturate(1.8)'
+      el.style.setProperty('-webkit-backdrop-filter', v)
+      el.style.setProperty('backdrop-filter', v)
+    }
+    nudgeGlassRef.current = nudge
+    return x.on('change', nudge)
+  }, [x])
+  // Backstop for change paths the track never sees: the entrance (x is idle during the
+  // open), the hi-res layer's opacity fade after a nav, a slow-mo entrance's late end.
+  useEffect(() => {
+    const ts = [450, 1200, 4200].map((ms) => window.setTimeout(() => nudgeGlassRef.current(), ms))
+    return () => ts.forEach((t) => window.clearTimeout(t))
+  }, [captionItem])
 
   // SWIPE DOWN UNDOES THE OPEN, rather than just sliding the photo away.
   //
@@ -863,7 +966,18 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
     // whereas 100vw stops short of it when a gutter is reserved. Kept in sync on resize; cleared on
     // close.
     body.style.overflow = 'hidden'
-    const fit = () => { if (root) root.style.width = `${window.innerWidth}px` }
+    // --dk-sb-gutter: how far innerWidth overhangs the visible layout viewport (the
+    // reserved scrollbar strip). The close button and the dock's right padding add it,
+    // so the chrome hugs the CONTENT edge, not the physical window edge under the
+    // scrollbar. Fine pointers only: touch scrollbars are overlays with no gutter.
+    const fit = () => {
+      if (!root) return
+      root.style.width = `${window.innerWidth}px`
+      const gutter = window.matchMedia('(pointer: fine)').matches
+        ? Math.max(0, window.innerWidth - document.documentElement.clientWidth)
+        : 0
+      root.style.setProperty('--dk-sb-gutter', `${gutter}px`)
+    }
     fit()
     window.addEventListener('resize', fit)
     return () => {
@@ -1199,7 +1313,7 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
         <button
           onClick={(e) => { e.stopPropagation(); onClose() }}
           aria-label="Close"
-          className="pointer-events-auto absolute top-3 right-[14px] flex h-11 w-11 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]"
+          className="pointer-events-auto absolute top-3 right-[calc(16px+var(--dk-sb-gutter,0px))] flex h-11 w-11 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]"
         >
           <IconClose />
         </button>
@@ -1208,9 +1322,13 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
 
       {/* Image area — full width so the slide track can carry an asset fully off-screen; the 16px
           side margins live on each slide's inner box (see Slide), not here, so they never clip the
-          animation. A slim pt-2 keeps breathing room up top; no bottom padding lets the photo grow
-          toward the caption rail. */}
-      <m.div className="flex-1 min-h-0 flex pt-2" style={{ y: yDrag, opacity: dragOpacity }}>
+          animation. No vertical padding: the photo owns the full lightbox height. */}
+      {/* max-sm:pb-[var(--dk-dock-h)]: on mobile the chrome never hides and a width-constrained
+          photo doesn't reach the viewport bottom, so without this the glass card straddles
+          the photo's bottom edge — half on photo, half on backdrop. Reserving the dock's
+          measured height (ResizeObserver above) centers the photo in the space above it.
+          Desktop keeps true full-bleed: the photo fills the height and the dock overlays. */}
+      <m.div className="flex-1 min-h-0 flex max-sm:pb-[var(--dk-dock-h,0px)]" style={{ y: yDrag, opacity: dragOpacity }}>
         <div
           ref={containerRef}
           className="flex-1 min-w-0 relative overflow-hidden"
@@ -1255,69 +1373,92 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
         </div>
       </m.div>
 
-      {/* Single rail — nav + caption + exif on the same surface as the photo, no divider
-          (transparent, so the lightbox background shows through as one continuous field), so the
-          photo is never obstructed. Clicks here don't close. Prev/next flank a centered caption;
-          exif trails on a muted mono line. No counter. */}
-      <m.div
-        onClick={(e) => e.stopPropagation()}
-        // Fades with the drag but does NOT move — only the media travels.
-        style={{ opacity: dragOpacity }}
-        className="dk-rail-foot shrink-0 flex items-center gap-3 px-3.5 pt-3"
-      >
-        {index > 0 ? (
-          <button
-            onClick={(e) => { e.stopPropagation(); commit(-1, e.shiftKey) }}
-            aria-label="Previous photo"
-            className="flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]"
-          >
-            <IconArrow dir="left" />
-          </button>
-        ) : (
-          <span className="h-11 w-11 shrink-0" />
-        )}
+      {/* Corner dock — the photo fills the entire lightbox; caption + EXIF ride a
+          dark-material glass card centered at the bottom, flanked by the prev/next
+          buttons (theme ink, surface hover), all floating over the photo. Dark material
+          (black-tinted blur, boosted saturation) is the HIG direction for light text
+          over photos — readable on any image, no scrim. Off the photo (and always on
+          mobile, where the card sits on the backdrop below the photo) the material
+          comes off and the text speaks in theme ink — see .dk-caption-card.
+          The dock fades with the swipe-down drag via dragOpacity; while that ancestor
+          opacity dips below 1 the card's blur goes flat (backdrop root) — accepted,
+          it's a dismissal gesture over a moving photo.
 
-        {/* Fixed-height caption well: a 1- vs 2-line caption/exif can't change the rail height
-            between photos (which shifted the image and the arrows — the jitter). Mobile reserves
-            the 2-line-caption + 2-line-exif worst case; desktop stays compact (matches the arrow
-            height). Captions cross-fade (old out / new in) so the swap reads smoothly, not as a pop. */}
-        <div className="relative min-w-0 flex-1 min-h-20 md:min-h-11">
-          <AnimatePresence initial={false}>
+          Entrance DURING the fly-in: arrows and caption card rise in lockstep from
+          below the viewport edge alongside the photo's flight. It is a pure CSS
+          keyframes animation (.dk-dock-enter) applied to the dock's CHILDREN, never
+          this dock: motion re-applies its cached transform/will-change to this element
+          on every re-render, and any transform on an ANCESTOR of the glass card makes
+          it the backdrop root — the card's blur samples a transparent subtree instead
+          of the photo (flat tint). The card's OWN transform keeps its backdrop
+          sampling live, so the glass blurs for the whole ride up. dockRiseClass comes
+          off once the entrance ends — per-item remounts of the keyed card must not
+          replay it. motion owns ONLY the dragOpacity binding here. Runs once per open. */}
+      <m.div
+        ref={dockRef}
+        onClick={(e) => e.stopPropagation()}
+        // Slow-mo stretches the rise via the vars the children's animation reads;
+        // the first animationend flips dockEntered (class removal) and re-measures
+        // the caption geometry with everything at rest.
+        style={{ opacity: dragOpacity, ...(slowMo ? ({ '--dk-dock-rise-dur': '3s', '--dk-dock-rise-delay': '0.6s' } as React.CSSProperties) : null) }}
+        onAnimationEnd={(e) => {
+          if ((e as React.AnimationEvent).animationName !== 'dk-dock-rise') return
+          setDockEntered(true)
+          measureCapRef.current()
+        }}
+        className="dk-rail-foot absolute inset-x-0 bottom-0 z-[25]"
+      >
+        {/* items-end: a long caption grows the card UPWARD while the arrows stay anchored
+            to the bottom edge instead of riding up with the row's centerline. On mobile the
+            caption takes the full dock width on its own line ABOVE the arrows (order-first +
+            basis-full wraps it); justify-between then spreads the arrows to the edges. */}
+        {/* 16px side padding at every size — the photo slides carry 16px inner margins, so
+            card edges and arrow buttons sit on the same vertical lines as the photo. */}
+        <div className="flex max-sm:flex-wrap items-end justify-between gap-3 pl-4 pr-[calc(16px+var(--dk-sb-gutter,0px))] pb-1">
+          {index > 0 ? (
+            <button
+              onClick={(e) => { e.stopPropagation(); commit(-1, e.shiftKey) }}
+              aria-label="Previous photo"
+              className={`${dockRiseClass}flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]`}
+            >
+              <IconArrow dir="left" />
+            </button>
+          ) : (
+            <span className={`${dockRiseClass}h-11 w-11 shrink-0`} />
+          )}
+          <div className="flex min-w-0 flex-1 justify-center max-sm:order-first max-sm:basis-full">
             {hasCaptions && (capCaption || capExif) && (
-              <m.div
+              <div
                 key={captionItem.src}
-                className="absolute inset-0 flex flex-col justify-center text-center"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.22, ease: 'easeInOut' }}
+                ref={capCardRef}
+                data-on-photo={capOnPhoto ? '' : undefined}
+                className={`${dockRiseClass}dk-caption-card max-w-full rounded-xl px-3.5 py-2.5 text-center`}
               >
                 {capCaption && (
-                  <p className="line-clamp-2 font-[family-name:var(--dk-font-sans)] text-[13.5px] leading-snug tracking-normal text-[var(--dk-fg)]">
-                    {capCaption}
-                  </p>
+                  <p className="font-[family-name:var(--dk-font-sans)] text-[14px] leading-[1.35]" style={{ color: 'var(--dk-cap-fg)' }}>{capCaption}</p>
                 )}
                 {capExif && (
-                  <p className="mt-1 line-clamp-2 font-[family-name:var(--dk-font-mono)] text-[11px] leading-normal text-[var(--dk-muted)]">
+                  // Wraps rather than truncates (mobile EXIF must stay whole); the roomier
+                  // leading keeps the lines readable when they stack.
+                  <p className={`${capCaption ? 'mt-1 ' : ''}font-[family-name:var(--dk-font-mono)] text-[11px] leading-[1.5]`} style={{ color: 'var(--dk-cap-muted)' }}>
                     {capExif}
                   </p>
                 )}
-              </m.div>
+              </div>
             )}
-          </AnimatePresence>
+          </div>
+          {index < total - 1 ? (
+            <button
+              onClick={(e) => { e.stopPropagation(); commit(1, e.shiftKey) }}
+              aria-label="Next photo"
+              className={`${dockRiseClass}flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]`}
+            >
+              <IconArrow dir="right" />
+            </button>
+          ) : (
+            <span className={`${dockRiseClass}h-11 w-11 shrink-0`} />
+          )}
         </div>
-
-        {index < total - 1 ? (
-          <button
-            onClick={(e) => { e.stopPropagation(); commit(1, e.shiftKey) }}
-            aria-label="Next photo"
-            className="flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]"
-          >
-            <IconArrow dir="right" />
-          </button>
-        ) : (
-          <span className="h-11 w-11 shrink-0" />
-        )}
       </m.div>
 
       {cloneTarget && originRect && (

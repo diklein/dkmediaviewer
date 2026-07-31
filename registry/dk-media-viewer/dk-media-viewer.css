@@ -77,12 +77,58 @@
   contain-intrinsic-size: auto 320px;
 }
 
-/* The lightbox caption rail hugs the home-indicator area on notched phones. */
+/* Lightbox bottom dock — 8px bottom padding on mobile (never less than the device's
+   safe-area inset), a touch more on desktop. */
 .dk-rail-foot {
-  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
 }
 @media (min-width: 56.25rem) {
   .dk-rail-foot {
-    padding-bottom: 1.25rem;
+    padding-bottom: 0.75rem;
+  }
+}
+
+/* Dock entrance. Pure CSS on purpose: a motion-managed transform gets re-applied on
+   every re-render, and any transform/will-change on an ANCESTOR of the glass card
+   makes that ancestor the backdrop root — the card's blur flat-tints (see the card
+   recipe below). The class therefore goes on the dock's CHILDREN (arrows + the card
+   itself), rising in lockstep: an element's OWN transform never breaks its backdrop
+   sampling, so the glass blurs LIVE for the whole ride. All children travel the same
+   fixed distance (the dock's published --dk-dock-h, plus some slack) so they move as
+   one unit; backwards fill holds them below the fold through the delay and evaporates
+   on the last frame. The lightbox removes the class once the entrance ends, so
+   per-item remounts of the caption card never replay it. Slow-mo stretches it via
+   --dk-dock-rise-dur/-delay on the dock.
+   The linear() easing is the house spring itself — x(t) for stiffness 620, damping 36,
+   mass 0.7 sampled over 500ms — so the rise shares the fly-in's physics, decel tail
+   and all. The cubic-bezier declaration is the fallback for browsers without linear(). */
+@keyframes dk-dock-rise {
+  from { transform: translateY(calc(var(--dk-dock-h, 96px) * 1.15)); }
+  to { transform: translateY(0); }
+}
+.dk-dock-enter {
+  animation: dk-dock-rise var(--dk-dock-rise-dur, 240ms) cubic-bezier(0.34, 1.3, 0.64, 1) var(--dk-dock-rise-delay, 80ms) backwards;
+  animation: dk-dock-rise var(--dk-dock-rise-dur, 500ms) linear(0, 0.1346, 0.3785, 0.6041, 0.7719, 0.8815, 0.9461, 0.9806, 0.9968, 1.0031, 1.0046, 1.004, 1.0029, 1.0019, 1.0011, 1.0006, 1.0003, 1.0001, 1, 1, 1, 1, 1, 1, 1) var(--dk-dock-rise-delay, 80ms) backwards;
+}
+
+/* Lightbox caption card. Desktop ON the photo: HIG thin-material-dark (black-tinted
+   blur, boosted saturation, hairline ring) because the photo fills the height and the
+   card sits over it. CONSTRAINT there: no ancestor of the card may carry opacity < 1
+   or a transform (it becomes the backdrop root and the blur flat-tints). Off the photo
+   — and always on mobile, where the photo rarely reaches the dock — the material comes
+   off and the text speaks in theme ink. --dk-cap-fg/--dk-cap-muted flip with the
+   material; the [data-on-photo] attribute is set by the lightbox's geometry check. */
+.dk-caption-card {
+  --dk-cap-fg: var(--dk-fg);
+  --dk-cap-muted: var(--dk-muted);
+}
+@media (min-width: 640px) {
+  .dk-caption-card[data-on-photo] {
+    --dk-cap-fg: rgba(245, 245, 245, 0.95);
+    --dk-cap-muted: rgba(245, 245, 245, 0.58);
+    background: rgba(0, 0, 0, 0.42);
+    backdrop-filter: blur(20px) saturate(1.8);
+    -webkit-backdrop-filter: blur(20px) saturate(1.8);
+    box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.15);
   }
 }

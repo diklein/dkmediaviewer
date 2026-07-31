@@ -42,8 +42,8 @@ An item is just:
 {
   src: '/photos/golden-gate.jpg',
   alt: 'Golden Gate Bridge in fog',
-  caption: 'Marin Headlands, October.',   // optional: shown in the lightbox rail
-  width: 2048, height: 1365,              // optional: avoids layout shift
+  caption: 'Marin Headlands, October.',   // optional: shown on the lightbox glass card
+  width: 2048, height: 1365,              // optional: avoids layout shift, drives the caption card's glass-vs-ink verdict
   exif: {                                  // optional: the mono spec line
     make: 'Ricoh', model: 'GR IIIx',
     exposureTime: '1/500', aperture: '2.8', focalLength: '26.1', iso: 200,
