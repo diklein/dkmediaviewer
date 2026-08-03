@@ -1182,6 +1182,12 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
     const target = dir === 1 ? nextItem : prevItem
     x.stop()
     flushSync(() => { if (dir === 1) onNext(); else onPrev() })
+    // A nav DURING the dock's entrance ends the entrance: the incoming caption card is keyed
+    // per item, and mounting it with .dk-dock-enter still applied replayed the whole rise
+    // from below the fold — delay and backwards fill included — so the new item showed no
+    // caption for a beat, then it climbed in late. Batched with setCaptionItem, so the
+    // remounted card's first render is already class-free.
+    setDockEntered(true)
     if (target) setCaptionItem(target)
     // Position the just-committed track synchronously (jump + a direct write, same task as the
     // index shift) so the swap lands in one paint with nothing displaced, then spring to centre.
