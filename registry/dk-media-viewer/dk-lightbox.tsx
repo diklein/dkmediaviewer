@@ -510,7 +510,17 @@ function Slide({ item, offset, priority, hiRes = true, getHiResSrc, onLoad, show
             loading={loading}
             decoding="async"
             draggable={false}
-            onLoad={() => setHiResLoaded(true)}
+            // decode() before revealing: onLoad means the BYTES arrived, not that the large
+            // bitmap is decoded — fading it in straight from onLoad forced decode during the
+            // opacity ramp, the little hitch visible on slow connections as the sharp layer
+            // swapped in. decode() runs off the main thread and resolves with the bitmap
+            // ready, so the fade is then a pure composited opacity ramp. Falls back to
+            // revealing anyway if decode() is unsupported or rejects.
+            onLoad={(e) => {
+              const img = e.currentTarget
+              const decoded: Promise<void> = img.decode ? img.decode().catch(() => {}) : Promise.resolve()
+              decoded.then(() => setHiResLoaded(true))
+            }}
             style={{ opacity: hiResLoaded ? 1 : 0, transition: 'opacity 300ms ease-out' }}
           />
         )}
@@ -1121,7 +1131,9 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
     // solid for the ~40ms until the clone paints. That placement is load-bearing.
     if (scrim) scrim.style.opacity = '0' // start transparent; the loop eases it back to 1
     if (!flightPainted) return
-    const DURATION = slowMo ? 3000 : 350 // shift-click slow-mo stretches the fade with the spring
+    // 550ms, up from 350: at 350 with the cubic ease the page was two-thirds gone 105ms after
+    // the click — it read as the page being yanked away rather than receding behind the photo.
+    const DURATION = slowMo ? 3000 : 550 // shift-click slow-mo stretches the fade with the spring
     // Integrate CLAMPED deltas rather than reading the wall clock: Safari drops frames through
     // the modal's first commit, and a wall-clock fade teleports across the gap — a stall can
     // never turn this dissolve into a cut.
@@ -1132,7 +1144,7 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
       elapsed += Math.min(now - last, 32)
       last = now
       const t = Math.max(0, Math.min(1, elapsed / DURATION))
-      const eased = 1 - (1 - t) ** 3 // ease-out cubic — fast, responsive
+      const eased = 1 - (1 - t) ** 2 // ease-out quad — softer start than the old cubic, so the page lingers
       if (veil) veil.style.opacity = String(Math.max(VEIL_MIN_OPACITY, eased)) // the bar's white rises
       if (scrim) scrim.style.opacity = String(eased)                          // the viewport's white, same curve
       if (t < 1) openFadeRafRef.current = requestAnimationFrame(frame)

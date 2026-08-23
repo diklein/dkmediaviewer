@@ -102,9 +102,9 @@ export function DKMediaViewer({
   return (
     <>
       {/* data-dk-scope: the lightbox pauses playing <video>s inside this wrapper while open. */}
-      <div data-dk-scope className={`dk-scope flex gap-4${className ? ` ${className}` : ''}`}>
+      <div data-dk-scope className={`dk-scope flex gap-2${className ? ` ${className}` : ''}`}>
         {columns.map((colItems, colIndex) => (
-          <div key={colIndex} className="flex-1 flex flex-col gap-4">
+          <div key={colIndex} className="flex-1 flex flex-col gap-2">
             {colItems.map(({ item, originalIndex }) => (
               <button
                 key={item.src}
