@@ -49,6 +49,10 @@ export function DKMediaViewer({
   deepLink = false,
 }: DKMediaViewerProps) {
   const [numCols, setNumCols] = useState(3)
+  // Reduced-motion visitors get still thumbnails: autoPlay drops and each clip holds its poster
+  // frame, with the lightbox as the play path (its player carries explicit controls). Read in an
+  // effect so the SSR markup stays stable; live-updated because the OS toggle can flip mid-visit.
+  const [reducedMotion, setReducedMotion] = useState(false)
   const prefetched = useRef<Set<string>>(new Set())
   // Thumbnail registry: close hands focus back to the item the viewer ended on, and deep links
   // need a zoom origin — both resolved through here.
@@ -93,6 +97,25 @@ export function DKMediaViewer({
     }
   }, [])
 
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const update = () => setReducedMotion(mq.matches)
+    update()
+    mq.addEventListener('change', update)
+    return () => mq.removeEventListener('change', update)
+  }, [])
+
+  // Mounted clips don't react to the autoPlay attribute changing, so a live preference flip is
+  // applied by hand: pause everything when motion is reduced, resume when the preference lifts.
+  useEffect(() => {
+    thumbEls.current.forEach((btn) => {
+      const video = btn.querySelector('video')
+      if (!video) return
+      if (reducedMotion) video.pause()
+      else video.play().catch(() => {})
+    })
+  }, [reducedMotion])
+
   if (items.length === 0) return null
 
   const columns: Array<Array<{ item: DKMediaItem; originalIndex: number }>> =
@@ -122,15 +145,17 @@ export function DKMediaViewer({
                 aria-label={item.alt ?? item.caption ?? (item.videoSrc ? 'Play video' : 'Open photo')}
               >
                 {item.videoSrc ? (
-                  // Clips autoplay muted in the grid (poster = item.src covers the load). The
-                  // lightbox resumes from this element's exact frame — see useDKLightbox's capture.
+                  // Clips autoplay muted in the grid (poster = item.src covers the load) — except
+                  // under prefers-reduced-motion, where they sit on their poster and play in the
+                  // lightbox instead. The lightbox resumes from this element's exact frame — see
+                  // useDKLightbox's capture.
                   <video
                     src={item.videoSrc}
                     poster={item.src}
                     muted
                     loop
                     playsInline
-                    autoPlay
+                    autoPlay={!reducedMotion}
                     preload="metadata"
                     className={IMG_CLASS}
                     style={
