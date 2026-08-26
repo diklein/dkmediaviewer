@@ -131,4 +131,19 @@
     -webkit-backdrop-filter: blur(20px) saturate(1.8);
     box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.15);
   }
+
+  /* The chrome buttons (close / prev / next) wear the caption's glass when THEIR
+     geometry says they're over the photo — ink buttons vanish on dark photos. Same
+     material, circle-sized; the per-button data-on-photo verdict is per-axis. */
+  .dk-chrome-btn[data-on-photo] {
+    color: rgba(245, 245, 245, 0.95);
+    background: rgba(0, 0, 0, 0.42);
+    backdrop-filter: blur(20px) saturate(1.8);
+    -webkit-backdrop-filter: blur(20px) saturate(1.8);
+    box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.15);
+  }
+  .dk-chrome-btn[data-on-photo]:hover,
+  .dk-chrome-btn[data-on-photo]:active {
+    background: rgba(0, 0, 0, 0.58);
+  }
 }

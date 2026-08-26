@@ -823,6 +823,12 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
   // computed (contain fit vs the card's text top) rather than measured off the img, so
   // it works mid-flight, after nav, and independent of image load state.
   const [capOnPhoto, setCapOnPhoto] = useState(false)
+  // Same verdict, extended to the chrome buttons: ink buttons got lost on dark photos.
+  // Each control earns glass on ITS OWN axes — the arrows when the photo is wide
+  // enough to run under them, the close when it reaches the top-right corner.
+  const [chromeOnPhoto, setChromeOnPhoto] = useState({ close: false, prev: false, next: false })
+  const prevBtnRef = useRef<HTMLButtonElement | null>(null)
+  const nextBtnRef = useRef<HTMLButtonElement | null>(null)
   const capCardRef = useRef<HTMLDivElement | null>(null)
   const measureCapRef = useRef<() => void>(() => {})
   useEffect(() => {
@@ -839,7 +845,11 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
       if (!box || !wrap || !dock || !root || box.height === 0) return
       // Declared dimensions may be absent on an item — without an aspect there is no
       // verdict, and ties go to ink (glass is the exception that needs to earn itself).
-      if (!captionItem.width || !captionItem.height) { setCapOnPhoto(false); return }
+      if (!captionItem.width || !captionItem.height) {
+        setCapOnPhoto(false)
+        setChromeOnPhoto({ close: false, prev: false, next: false })
+        return
+      }
       const assetW = Math.max(0, box.width - SLIDE_INSET * 2)
       // captionItem's aspect, NOT the item prop's: captionItem flips synchronously at a
       // nav commit — it IS the photo the card is captioning, which is the one the
@@ -855,6 +865,31 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
       const dockRect = dock.getBoundingClientRect()
       const wrapRestTop = root.getBoundingClientRect().bottom - dock.offsetHeight + (wrap.top - dockRect.top)
       setCapOnPhoto(photoBottom > wrapRestTop + 10)
+
+      // Chrome buttons, same contain-fit geometry on their own axes. Rest positions via
+      // the same transform-invariant offset math (entrance-proof); a button is "on
+      // photo" only when the photo underlaps most of its 44px circle (8px grace).
+      const rootRect = root.getBoundingClientRect()
+      const dispW = Math.min(assetW, box.height * (captionItem.width / captionItem.height))
+      const photoLeft = box.left + SLIDE_INSET + (assetW - dispW) / 2
+      const photoRight = photoLeft + dispW
+      const photoTop = box.top + (box.height - dispH) / 2
+      const gutter = parseFloat(getComputedStyle(root).getPropertyValue('--dk-sb-gutter')) || 0
+      const restTopOf = (el: HTMLElement | null) => {
+        if (!el) return Infinity
+        return rootRect.bottom - dock.offsetHeight + (el.getBoundingClientRect().top - dockRect.top)
+      }
+      const arrowOn = (el: HTMLButtonElement | null) => {
+        if (!el) return false
+        const r = el.getBoundingClientRect()
+        const vert = photoBottom > restTopOf(el) + 8
+        return vert && photoLeft < r.right - 8 && photoRight > r.left + 8
+      }
+      setChromeOnPhoto({
+        close: photoTop < rootRect.top + 12 + 44 - 8 && photoRight > rootRect.right - (16 + gutter) - 44 + 8,
+        prev: arrowOn(prevBtnRef.current),
+        next: arrowOn(nextBtnRef.current),
+      })
     }
     measureCapRef.current = measure
     // rAF: run after the layout from an item/caption swap has settled.
@@ -1339,7 +1374,8 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
         <button
           onClick={(e) => { e.stopPropagation(); onClose() }}
           aria-label="Close"
-          className="pointer-events-auto absolute top-3 right-[calc(16px+var(--dk-sb-gutter,0px))] flex h-11 w-11 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]"
+          data-on-photo={chromeOnPhoto.close || undefined}
+          className="dk-chrome-btn pointer-events-auto absolute top-3 right-[calc(16px+var(--dk-sb-gutter,0px))] flex h-11 w-11 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]"
         >
           <IconClose />
         </button>
@@ -1443,9 +1479,11 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
         <div className="flex max-sm:flex-wrap items-end justify-between gap-3 pl-4 pr-[calc(16px+var(--dk-sb-gutter,0px))] pb-1">
           {index > 0 ? (
             <button
+              ref={prevBtnRef}
               onClick={(e) => { e.stopPropagation(); commit(-1, e.shiftKey) }}
               aria-label="Previous photo"
-              className={`${dockRiseClass}flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]`}
+              data-on-photo={chromeOnPhoto.prev || undefined}
+              className={`${dockRiseClass}dk-chrome-btn flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]`}
             >
               <IconArrow dir="left" />
             </button>
@@ -1475,9 +1513,11 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
           </div>
           {index < total - 1 ? (
             <button
+              ref={nextBtnRef}
               onClick={(e) => { e.stopPropagation(); commit(1, e.shiftKey) }}
               aria-label="Next photo"
-              className={`${dockRiseClass}flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]`}
+              data-on-photo={chromeOnPhoto.next || undefined}
+              className={`${dockRiseClass}dk-chrome-btn flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]`}
             >
               <IconArrow dir="right" />
             </button>
