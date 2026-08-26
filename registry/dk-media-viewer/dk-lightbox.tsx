@@ -57,7 +57,15 @@ const FLY_LIVE_VIDEO = true
  * left/right nav all share it deliberately, so the same gesture always feels like the same
  * object. */
 const SPRING = { type: 'spring', stiffness: 620, damping: 36, mass: 0.7 } as const
-const OPEN_SPRING = SPRING // the fly-in from the thumbnail
+/* The fly-in's PER-UNIT rest thresholds. motion completes a spring inside restDelta
+ * and SNAPS to the end value; the default (0.01) suits pixel tracks, but on the
+ * flight's SCALE tracks 1% of a large photo is a visible teleport at the far edge
+ * (transform-origin 0 0 puts it all on the right/bottom). Sub-pixel thresholds render
+ * the overshoot's whole tail and let completion fire at true visual rest, so the
+ * clone handoff cuts between still frames. */
+const OPEN_SPRING_SCALE = { ...SPRING, restDelta: 0.0005, restSpeed: 0.005 } as const
+const OPEN_SPRING_PX = { ...SPRING, restDelta: 0.1, restSpeed: 1 } as const
+const OPEN_SPRING = { x: OPEN_SPRING_PX, y: OPEN_SPRING_PX, scaleX: OPEN_SPRING_SCALE, scaleY: OPEN_SPRING_SCALE } as const // the fly-in from the thumbnail
 const NAV_SPRING = SPRING // left / right between assets
 /* prefers-reduced-motion: the MOVE is kept — it carries spatial meaning — but the decorative
  * overshoot is removed. Critically damped: it arrives and stops. */
