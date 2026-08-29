@@ -8,12 +8,13 @@
  * are the reason the code is shaped the way it is, and deleting them invites regressing it. */
 
 import { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'react'
+import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { flushSync } from 'react-dom'
 import { createPortal } from 'react-dom'
+import * as m from 'motion/react-m'
 import {
   LazyMotion,
   domAnimation,
-  m,
   useMotionValue,
   useTransform,
   animate,
@@ -62,7 +63,7 @@ const SPRING = { type: 'spring', stiffness: 620, damping: 36, mass: 0.7 } as con
  * flight's SCALE tracks 1% of a large photo is a visible teleport at the far edge
  * (transform-origin 0 0 puts it all on the right/bottom). Sub-pixel thresholds render
  * the overshoot's whole tail and let completion fire at true visual rest, so the
- * clone handoff cuts between still frames. */
+ * clone handoff cuts between still frames. Mirrors photos-lightbox (2026-08-26). */
 const OPEN_SPRING_SCALE = { ...SPRING, restDelta: 0.0005, restSpeed: 0.005 } as const
 const OPEN_SPRING_PX = { ...SPRING, restDelta: 0.1, restSpeed: 1 } as const
 const OPEN_SPRING = { x: OPEN_SPRING_PX, y: OPEN_SPRING_PX, scaleX: OPEN_SPRING_SCALE, scaleY: OPEN_SPRING_SCALE } as const // the fly-in from the thumbnail
@@ -100,22 +101,13 @@ function containRect(
 }
 
 function IconClose() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="M2 2L14 14M14 2L2 14" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
-    </svg>
-  )
+  return <X aria-hidden="true" size={24} />
 }
 
 function IconArrow({ dir }: { dir: 'left' | 'right' }) {
-  return (
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
-      {dir === 'left'
-        ? <path d="M11 3L5 9L11 15" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
-        : <path d="M7 3L13 9L7 15" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
-      }
-    </svg>
-  )
+  return dir === 'left'
+    ? <ChevronLeft aria-hidden="true" size={28} />
+    : <ChevronRight aria-hidden="true" size={28} />
 }
 
 export interface DKLightboxProps {
@@ -218,6 +210,9 @@ function LightboxVideo({ item, priority, onLoad, armed = true, getCloneTime }: {
    *  because this clip plays behind the veil while it loads and drifts away from the clone. */
   getCloneTime?: () => number | null
 }) {
+  // Reduced motion: no autoplay; the native controls become the play affordance
+  // (ported from photos-lightbox, 2026-08-28 drift audit).
+  const reduceMotion = useReducedMotion()
   const ref = useRef<HTMLVideoElement>(null)
   // The REVEAL must not run until the fly-in has landed — otherwise the modal clip would appear
   // over the top of the clone that is still flying. This clip is already playing by then (in sync
@@ -308,7 +303,7 @@ function LightboxVideo({ item, priority, onLoad, armed = true, getCloneTime }: {
       } else {
         seekLanded = true // no seek needed: the current frame is already the right frame
       }
-      if (priority) v.play().catch(() => {})
+      if (priority && !reduceMotion) v.play().catch(() => {})
     }
     let done = false
     const reveal = () => {
@@ -406,7 +401,7 @@ function LightboxVideo({ item, priority, onLoad, armed = true, getCloneTime }: {
       v.removeEventListener('loadedmetadata', measure)
       ro.disconnect()
     }
-  }, [priority, item.videoSrc, item.videoTime, showBar])
+  }, [priority, item.videoSrc, item.videoTime, showBar, reduceMotion])
 
   return (
     <>
@@ -417,6 +412,11 @@ function LightboxVideo({ item, priority, onLoad, armed = true, getCloneTime }: {
         muted
         loop
         playsInline
+        // Reduced motion: the clip stays paused on its synced frame, so the native controls are
+        // the play affordance (the lightbox has no other one). Their taps must not bubble to
+        // the root's tap-to-close.
+        controls={!!reduceMotion}
+        onClick={reduceMotion ? (e) => e.stopPropagation() : undefined}
         preload={priority ? 'auto' : 'metadata'}
         // No poster: the reveal waits for the clip to paint, so it shows frame 0 directly with
         // no poster→video swap. A <video> is a replaced element, so left/right insets don't
@@ -611,6 +611,7 @@ function FlightStill({ item, onPainted, hidden = false, repaintRef }: {
  *  FlightStill (the exact clicked frame) is already underneath, so hiding the video until it lands
  *  costs nothing: the swap is then pixel-identical and imperceptible. */
 function FlightVideo({ item, videoRef, onShown }: { item: DKLightboxItem; videoRef: { current: HTMLVideoElement | null }; onShown?: () => void }) {
+  const reduceMotion = useReducedMotion()
   const ref = useRef<HTMLVideoElement>(null)
   const [shown, setShown] = useState(false)
   const onShownRef = useRef(onShown)
@@ -653,7 +654,7 @@ function FlightVideo({ item, videoRef, onShown }: { item: DKLightboxItem; videoR
       onLoadedMetadata={(e) => {
         const v = e.currentTarget
         if (item.videoTime) v.currentTime = item.videoTime
-        v.play().catch(() => {})
+        if (!reduceMotion) v.play().catch(() => {})
       }}
       // No transition: this is a cut between identical pixels (the still and the clip's own frame),
       // so a cross-fade would only make it visible.
@@ -672,7 +673,9 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
   const FG = 'var(--dk-fg)'
   const BG = 'var(--dk-bg)'
   const reduceMotion = useReducedMotion()
-  const openSpring = slowMo ? SLOW_OPEN_SPRING : OPEN_SPRING
+  // Reduced motion wins over slow-mo: the fly-in becomes the settle-only spring
+  // (ported from photos-lightbox, 2026-08-28 drift audit).
+  const openSpring = reduceMotion ? NAV_SPRING_REDUCED : slowMo ? SLOW_OPEN_SPRING : OPEN_SPRING
 
   const rootRef = useRef<HTMLDivElement>(null)
   const scrimRef = useRef<HTMLDivElement>(null)
@@ -773,19 +776,24 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
     // slide's intrinsic-aspect letterbox, a long overlap shows two sizes stacked.
     const id = window.setTimeout(settleClone, item.videoSrc ? 300 : 35)
     return () => window.clearTimeout(id)
-  }, [containerVisible, cloneGone, settleClone])
+  }, [containerVisible, cloneGone, settleClone, item.videoSrc])
   // At the moment of the handoff, refresh the still UNDER the clone's video with the clone's
   // current frame and bring it back (FlightStill was hidden once the live video painted). Every
   // layer Safari might transiently drop during the handoff re-composite now has current pixels
   // beneath it instead of the white scrim.
   const stillRepaintRef = useRef<((v: HTMLVideoElement) => void) | null>(null)
   const [stillResurfaced, setStillResurfaced] = useState(false)
-  useEffect(() => {
-    if (!containerVisible || stillResurfaced) return
+  // The still comes back the moment the container is visible (render adjustment)…
+  if (containerVisible && !stillResurfaced) setStillResurfaced(true)
+  // …with FRESH pixels: the repaint runs pre-paint (layout effect) in that same commit,
+  // so the resurfaced still never paints a stale frame.
+  const stillRepaintedRef = useRef(false)
+  useLayoutEffect(() => {
+    if (!containerVisible || stillRepaintedRef.current) return
     const cv = cloneVideoRef.current
     if (cv) stillRepaintRef.current?.(cv)
-    setStillResurfaced(true)
-  }, [containerVisible, stillResurfaced])
+    stillRepaintedRef.current = true
+  }, [containerVisible])
   // Where the flying-clone open lands: the photo's contain-fitted rect inside the container.
   // Aspect comes from the thumbnail's rect (originRect) — always known, whereas declared
   // width/height may be absent, which would make the fit NaN and the photo never reveal.
@@ -813,7 +821,9 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
   // Caption/exif follow the committed item but update in step with the slide (not at
   // its end), so they don't appear to lag the image. Re-synced to `item` on prop change.
   const [captionItem, setCaptionItem] = useState(item)
-  useEffect(() => { setCaptionItem(item) }, [item])
+  // Adjust during render, not in an effect: the caption flips in the SAME commit as the
+  // slide, never a paint behind it.
+  if (captionItem !== item) setCaptionItem(item)
   const capCaption = captionItem.caption ?? null
   const capExif = formatExif(captionItem.exif)
 
@@ -842,13 +852,13 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
       const dock = dockRef.current
       const root = rootRef.current
       const wrap = capCardRef.current?.parentElement?.getBoundingClientRect()
-      if (!box || !wrap || !dock || !root || box.height === 0) return
+      if (!box || !wrap || !dock || !root || box.height === 0) return false
       // Declared dimensions may be absent on an item — without an aspect there is no
       // verdict, and ties go to ink (glass is the exception that needs to earn itself).
       if (!captionItem.width || !captionItem.height) {
         setCapOnPhoto(false)
         setChromeOnPhoto({ close: false, prev: false, next: false })
-        return
+        return true
       }
       const assetW = Math.max(0, box.width - SLIDE_INSET * 2)
       // captionItem's aspect, NOT the item prop's: captionItem flips synchronously at a
@@ -883,17 +893,31 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
         if (!el) return false
         const r = el.getBoundingClientRect()
         const vert = photoBottom > restTopOf(el) + 8
-        return vert && photoLeft < r.right - 8 && photoRight > r.left + 8
+        // Horizontal: NEAR the photo counts as on it (16px grace) — a bare ink arrow
+        // floating a few pixels off a photo edge reads worse than glass slightly over
+        // the gutter. Overrides ties-go-to-ink at the edges only.
+        return vert && photoLeft < r.right + 16 && photoRight > r.left - 16
       }
       setChromeOnPhoto({
         close: photoTop < rootRect.top + 12 + 44 - 8 && photoRight > rootRect.right - (16 + gutter) - 44 + 8,
         prev: arrowOn(prevBtnRef.current),
         next: arrowOn(nextBtnRef.current),
       })
+      return true
     }
     measureCapRef.current = measure
-    // rAF: run after the layout from an item/caption swap has settled.
-    const raf = requestAnimationFrame(measure)
+    // Retry every frame until the layout is measurable: on a COLD open the dock and
+    // caption card mount a beat after the dialog, so a single post-swap rAF hit the
+    // ref guard, bailed silently, and the verdict sat at its ink default until the
+    // 450ms backstop landed it — the glass (blur included) popped in a second after
+    // the fly-in settled.
+    let raf = requestAnimationFrame(function tick() {
+      let tries = 0
+      const run = () => {
+        if (measure() === false && tries++ < 60) raf = requestAnimationFrame(run)
+      }
+      run()
+    })
     const late = window.setTimeout(measure, 450) // after the nav spring lands
     window.addEventListener('resize', measure)
     return () => { cancelAnimationFrame(raf); window.clearTimeout(late); window.removeEventListener('resize', measure) }
@@ -908,8 +932,15 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
   // Has the dock's entrance finished? While false, the dock's children carry the
   // .dk-dock-enter rise animation; flipping true removes the class so the keyed
   // caption card can remount on nav without replaying the entrance.
+  // The entrance is a pure opacity fade (no translate): the rise was cut when the
+  // chrome moved to entering at the clone handoff — a hard appear read as a glitch,
+  // and a transform on the entering card is exactly what WebKit punishes hardest on
+  // backdrop-filter. (Safari still withholds the blur until any animation on the
+  // element finishes, so the glass sharpens at the fade's end there — 350ms, subtle.)
   const [dockEntered, setDockEntered] = useState(false)
-  const dockRiseClass = dockEntered ? '' : 'dk-dock-enter '
+  // Held invisible until the clone handoff (animDone) — see the .dk-dock-hold comment
+  // at the close button. The fade plays from the handoff, not from mount.
+  const dockRiseClass = !animDone ? 'dk-dock-hold ' : dockEntered ? '' : 'dk-dock-fade '
   useLayoutEffect(() => {
     const dock = dockRef.current
     const root = rootRef.current
@@ -1267,6 +1298,10 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
   // Arrow keys animate through the same track as swipe / on-screen arrows.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Modified chords belong to the browser (Alt+ArrowLeft = Back, Cmd+ArrowLeft = Home) —
+      // only a bare arrow (or Shift+arrow, the slow-mo debug) navigates. Ported from
+      // photos-lightbox (2026-08-28 drift audit).
+      if (e.altKey || e.metaKey || e.ctrlKey) return
       if (e.key === 'ArrowRight') { e.preventDefault(); commit(1, e.shiftKey) }
       else if (e.key === 'ArrowLeft') { e.preventDefault(); commit(-1, e.shiftKey) }
     }
@@ -1342,7 +1377,9 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
       // background eases in instead of snapping opaque on open. (Safari's toolbar is kept solid
       // separately by fading the page content out — see the page-fade effect — since the toolbar
       // blurs the document behind this fixed overlay, not the overlay itself.)
-      style={{ color: FG }}
+      // overscrollBehavior: iOS must not rubber-band the page beneath when a drag starts on
+      // chrome (dock, close button) — the media container already owns touchAction: none.
+      style={{ color: FG, overscrollBehavior: 'contain' }}
       role="dialog"
       aria-modal="true"
       aria-label={caption ?? 'Photo'}
@@ -1353,17 +1390,34 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
           Kept `absolute`, never `fixed` + negative z — that composited ABOVE the photo in Safari and
           hid it. */}
       <div ref={scrimRef} className="absolute inset-0 -z-10" style={{ backgroundColor: BG }} />
+      {/* Arrow keys and the Next/Previous buttons swap the photo without any announcement (a
+          changed aria-label on the dialog is never re-read) — this quiet status line is what
+          a screen reader hears on each navigation. */}
+      <div role="status" className="sr-only">
+        {`Photo ${index + 1} of ${total}${caption ? `: ${caption}` : ''}`}
+      </div>
       {/* Inner layer carries the swipe-down-to-dismiss transform. */}
       {/* The swipe used to translate THIS whole layer — chrome included. The drag now lives
           on the media area alone (and the rail fades in place): the close button and arrows
           hold still while the photo is pulled away (Dave's call, 2026-07-24). */}
       <div className="relative flex flex-1 flex-col min-h-0">
       {/* Close — sits above the image; the surrounding layer passes clicks through. */}
+      {/* Chrome waits for the clone handoff (animDone): during the fly-in the photo is
+          an animated clone on its own compositing layer, and backdrop-filter cannot
+          sample it — glass shown mid-flight blurs nothing and the blur snaps in at
+          landing, in every engine. Chrome that appears AT the handoff wears a working
+          blur from its first frame. */}
+      <style>{`
+        .dk-dock-hold { opacity: 0 !important; animation: none !important; }
+        .dk-dock-fade { animation: dk-dock-fade 0.35s ease-out both; }
+        @keyframes dk-dock-fade { from { opacity: 0; } to { opacity: 1; } }
+        @media (prefers-reduced-motion: reduce) { .dk-dock-fade { animation-duration: 0.01s; } }
+      `}</style>
       <m.div
         className="absolute inset-0 pointer-events-none z-30"
         initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: !animDone ? 0.25 : 0, duration: 0.2 }}
+        animate={{ opacity: animDone ? 1 : 0 }}
+        transition={{ duration: 0.2 }}
       >
         {/* Fades with the drag but does NOT move. It was the last opaque thing on the modal
             at unmount, and iOS 26's bottom-bar backdrop cache held a snapshot of it (plus the
@@ -1374,6 +1428,8 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
         <button
           onClick={(e) => { e.stopPropagation(); onClose() }}
           aria-label="Close"
+          // touchAction: taps only — a drag starting on the button must not scroll the page beneath.
+          style={{ touchAction: 'manipulation' }}
           data-on-photo={chromeOnPhoto.close || undefined}
           className="dk-chrome-btn pointer-events-auto absolute top-3 right-[calc(16px+var(--dk-sb-gutter,0px))] flex h-11 w-11 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]"
         >
@@ -1462,9 +1518,11 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
         // Slow-mo stretches the rise via the vars the children's animation reads;
         // the first animationend flips dockEntered (class removal) and re-measures
         // the caption geometry with everything at rest.
-        style={{ opacity: dragOpacity, ...(slowMo ? ({ '--dk-dock-rise-dur': '3s', '--dk-dock-rise-delay': '0.6s' } as React.CSSProperties) : null) }}
+        // touchAction manipulation: taps on the dock (arrows, caption card) stay taps — a drag
+        // starting here must not rubber-band the page beneath the modal on iOS.
+        style={{ opacity: dragOpacity, touchAction: 'manipulation', ...(slowMo ? ({ '--dk-dock-rise-dur': '3s', '--dk-dock-rise-delay': '0.6s' } as React.CSSProperties) : null) }}
         onAnimationEnd={(e) => {
-          if ((e as React.AnimationEvent).animationName !== 'dk-dock-rise') return
+          if ((e as React.AnimationEvent).animationName !== 'dk-dock-fade') return
           setDockEntered(true)
           measureCapRef.current()
         }}
@@ -1641,21 +1699,26 @@ function restoreFocus(el: HTMLElement, withRing: boolean) {
   el.focus({ preventScroll: true })
   el.scrollIntoView({ block: 'nearest' })
   if (withRing) return
-  // Suppress the ring for this landing only — BOTH halves of any global :focus-visible recipe
-  // the host site may have: an outline AND a box-shadow halo. (An Escape press makes the browser
-  // treat the subsequent programmatic focus as :focus-visible, so such a rule fires even for a
-  // mouse session; suppressing only the outline leaves a halo showing.) Inline styles win over
-  // the rule; lifted the moment focus moves on or the keyboard comes into play.
+  // Suppress the ring for this landing only — ALL THREE pieces of any global :focus-visible
+  // recipe the host site may have: an outline, a box-shadow halo, AND a border-radius.
+  // (An Escape press makes the browser treat the subsequent programmatic focus as
+  // :focus-visible, so such a rule fires even for a mouse session; suppressing only
+  // outline+shadow left the radius rounding a thumbnail's corners — the fix that landed in
+  // the site's lib/restore-focus and is mirrored here, 2026-08-28 drift audit.) Inline
+  // styles win over the rule; lifted the moment focus moves on or the keyboard comes into play.
   const prevOutline = el.style.outline
   const prevShadow = el.style.boxShadow
+  const prevRadius = el.style.borderRadius
   const lift = () => {
     el.style.outline = prevOutline
     el.style.boxShadow = prevShadow
+    el.style.borderRadius = prevRadius
     el.removeEventListener('blur', lift)
     window.removeEventListener('keydown', lift)
   }
   el.style.outline = 'none'
   el.style.boxShadow = 'none'
+  el.style.borderRadius = '0'
   el.addEventListener('blur', lift, { once: true })
   window.addEventListener('keydown', lift, { once: true })
 }
@@ -1687,7 +1750,8 @@ export function useDKLightbox(items: DKMediaItem[], options: DKLightboxOptions =
   const optionsRef = useRef(options)
   useEffect(() => { optionsRef.current = options })
   // The clicked item's runtime capture (decoded src / video frame), keyed to its index.
-  const captureRef = useRef<{ index: number; data: Partial<DKLightboxItem> } | null>(null)
+  // State, not a ref: the portal render below reads it, and render must not read refs.
+  const [capture, setCapture] = useState<{ index: number; data: Partial<DKLightboxItem> } | null>(null)
   const prefetchedHiRes = useRef<Set<string>>(new Set())
   // Videos elsewhere in the opener's scope, paused while the overlay is open — otherwise they
   // keep playing behind the fading-in backdrop and flash as "remnants". Resumed on close.
@@ -1819,7 +1883,7 @@ export function useDKLightbox(items: DKMediaItem[], options: DKLightboxOptions =
     } else {
       setOriginRect(null)
     }
-    captureRef.current = { index, data }
+    setCapture({ index, data })
     setSelectedIndex(index)
   }, [])
 
@@ -1864,16 +1928,17 @@ export function useDKLightbox(items: DKMediaItem[], options: DKLightboxOptions =
     return () => window.clearTimeout(t)
   }, [selectedIndex])
 
-  const toLightboxItem = useCallback((i: number): DKLightboxItem => {
-    const base = itemsRef.current[i]
-    const cap = captureRef.current
+  // Called only from the portal JSX below — a plain render helper over render-scope
+  // values (items prop + capture state), no refs.
+  const toLightboxItem = (i: number): DKLightboxItem => {
+    const base = items[i]
     return {
       ...base,
       // Package default: clips in the modal get the 2px accent progress bar.
       videoProgress: !!base.videoSrc,
-      ...(cap && cap.index === i ? cap.data : null),
+      ...(capture && capture.index === i ? capture.data : null),
     }
-  }, [])
+  }
 
   const selected = selectedIndex !== null ? items[selectedIndex] : null
   const hasCaptions =

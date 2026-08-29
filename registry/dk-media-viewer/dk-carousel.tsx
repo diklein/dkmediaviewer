@@ -44,15 +44,13 @@ export function DKCarousel({
   getHiResSrc,
   showOutline = false,
 }: DKCarouselProps) {
-  const [active, setActive] = useState(0)
-  // The slide that should fade OUT: whatever was active before this render's change. A ref
-  // updated in an effect holds the previous committed index — during the render where `active`
-  // just changed, it still points at the outgoing slide, which is exactly what we want to fade.
-  const prevRef = useRef(0)
-  useEffect(() => {
-    prevRef.current = active
-  }, [active])
-  const prev = prevRef.current
+  // active + the slide that should fade OUT, advanced atomically: every jump records the
+  // outgoing index in the same state update, so the render that shows the new slide still
+  // knows which one is fading — no ref read during render, no post-commit effect.
+  const [indices, setIndices] = useState({ active: 0, prev: 0 })
+  const { active, prev } = indices
+  const setActive = (next: number | ((cur: number) => number)) =>
+    setIndices(({ active }) => ({ active: typeof next === 'function' ? next(active) : next, prev: active }))
 
   const slideEls = useRef<Map<number, HTMLButtonElement>>(new Map())
   const { open, isOpen, lightbox } = useDKLightbox(items, {
@@ -125,7 +123,7 @@ export function DKCarousel({
               aria-label={item.alt ? `Enlarge: ${item.alt}` : 'View enlarged'}
               aria-hidden={!isActive}
               tabIndex={isActive ? 0 : -1}
-              className={`absolute inset-0 block cursor-zoom-in ease-out focus-visible:outline-none${
+              className={`absolute inset-0 block cursor-zoom-in ease-out${
                 isPrev ? ' transition-[opacity,filter] duration-700 motion-reduce:transition-none' : ''
               }`}
               style={{
@@ -163,12 +161,15 @@ export function DKCarousel({
                   aria-label={`Show ${item.alt ?? `slide ${i + 1}`}`}
                   aria-current={isActive}
                   onClick={() => setActive(i)}
-                  // The dot stays small, but the button is a taller/padded hit target so it is
+                  // The dot stays small, but the button is a 24px-minimum hit target so it is
                   // easy to click, with a pointer cursor and a hover brighten so it reads as one.
-                  className="group/dot flex h-6 cursor-pointer items-center px-0.5"
+                  // The ::before extension (not min-w) supplies the extra clickable width, so the
+                  // dots' visual spacing is untouched while every target clears 24x24. (Ported
+                  // from the site slideshow, 2026-08-28 drift audit.)
+                  className="group/dot relative flex h-6 cursor-pointer items-center px-0.5 before:absolute before:inset-y-0 before:-inset-x-1.5"
                 >
                   <span
-                    className="relative block h-2 overflow-hidden rounded-full transition-[width,filter] duration-300 ease-out group-hover/dot:brightness-150"
+                    className="relative block h-2 overflow-hidden rounded-full drop-shadow-[0_0_2px_rgba(0,0,0,0.6)] transition-[width,filter] duration-300 ease-out group-hover/dot:brightness-150 motion-reduce:transition-none"
                     style={{
                       width: isActive ? 30 : 8,
                       backgroundColor: isActive ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.55)',
@@ -190,8 +191,11 @@ export function DKCarousel({
           </div>
         )}
       </div>
-      {items[active].caption && (
-        <p className="mt-3 text-center font-[family-name:var(--dk-font-sans)] text-[0.95rem] leading-snug text-[var(--dk-muted)]">
+      {items.some((item) => item.caption) && (
+        // The live region stays mounted across advances (an element that appears with its
+        // text isn't announced), so auto-advance caption swaps reach screen readers.
+        // (Ported from the site slideshow, 2026-08-28 drift audit.)
+        <p aria-live="polite" className="mt-3 text-center font-[family-name:var(--dk-font-sans)] text-[0.95rem] leading-snug text-[var(--dk-muted)]">
           {items[active].caption}
         </p>
       )}
