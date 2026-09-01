@@ -1,3 +1,11 @@
+<!-- The product mark: GitHub serves the ink per theme via <picture>; npm keeps the
+     light asset (it strips <source> but leaves the <img>) and rewrites the relative
+     path to the repo's raw URL. -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/mark-dark.svg">
+  <img src="assets/mark-light.svg" width="72" height="72" alt="">
+</picture>
+
 # DKMediaViewer
 
 DKMediaViewer is a minimalist, performant, and elegant photo and video viewer for React that was extracted from [diklein.com](https://diklein.com). I am releasing it to share the work that went into making this UX delightful, and to let anyone give their own photos and videos the same experience.
