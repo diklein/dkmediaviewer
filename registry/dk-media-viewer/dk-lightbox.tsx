@@ -78,6 +78,10 @@ const SPRING_SLOW = { type: 'spring', duration: 3, bounce: 0.2 } as const
 const SLOW_OPEN_SPRING = SPRING_SLOW
 const SLOW_NAV_SPRING = SPRING_SLOW
 const CLOSE_DRAG = 100 // swipe the image down past this (px) to dismiss
+// The close and arrow buttons' opacity channel during the open: the modal root carries
+// --dk-chrome-fade, written by the open loop with the scrim's eased value each frame (the
+// page fades out, the controls fade in, one curve). 1 when the loop never runs.
+const DK_CHROME_FADE_STYLE = { opacity: 'var(--dk-chrome-fade, 1)' } as const
 /* The veil (the in-document layer the iOS bottom bar blurs — see the backdrop effect) never
  * goes below THIS opacity while mounted: at exactly 0 an element paints nothing and Safari
  * tears its layers down, and rebuilding is the lazy path that popped instead of fading. */
@@ -494,11 +498,25 @@ function Slide({ item, offset, priority, hiRes = true, getHiResSrc, onLoad, show
   const hiResUrl = getHiResSrc?.(item)
   const showHiRes = !!hiResUrl && hiResUrl !== baseSrc
   const loading = priority ? undefined : ('eager' as const)
+  // Never upscale a raster past its own pixels. Items that declare their real size (the
+  // scanner records it) get a box capped to that size in CSS px at the current device pixel
+  // ratio, centred in the slide: a 1024px image on a 2x display opens at 512px, not the
+  // viewport height. Items without a size fill the slide as before.
+  const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
+  const capped = item.width && item.height
+    ? { maxWidth: item.width / dpr, maxHeight: item.height / dpr }
+    : undefined
   return (
     <div className="absolute inset-0" style={{ transform: `translateX(${offset})` }}>
       {/* Full-width slide (travels fully off-screen), asset inset 16px so it keeps its margins at
-          rest without the container's clip cutting the slide short mid-animation. */}
-      <div className="absolute inset-y-0 inset-x-4">
+          rest without the container's clip cutting the slide short mid-animation. Inline
+          geometry rather than utility classes so the capped variant needs no new class. */}
+      <div
+        className="absolute"
+        style={capped
+          ? { left: '50%', top: '50%', transform: 'translate(-50%, -50%)', width: 'calc(100% - 2rem)', height: '100%', ...capped }
+          : { top: 0, bottom: 0, left: '1rem', right: '1rem' }}
+      >
         {!baseLoaded && <AssetShimmer w={item.width} h={item.height} />}
         <img
           src={baseSrc}
@@ -805,17 +823,27 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
   // photo or clip on a phone) fly to full-bleed and then snap to its real, inset width the
   // moment the track revealed.
   const SLIDE_INSET = 16
-  const cloneTarget = targetRect && originRect
-    ? containRect(
-        {
-          left: targetRect.left + SLIDE_INSET,
-          top: targetRect.top,
-          width: targetRect.width - SLIDE_INSET * 2,
-          height: targetRect.height - barReserve,
-        },
-        originRect.width,
-        originRect.height,
-      )
+  // A sized raster's slide box is capped to its own pixels (see Slide), so the flight must
+  // land inside that capped, centred box or it flies to full size and snaps smaller on reveal.
+  const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
+  const fitBox = targetRect
+    ? (() => {
+        let width = targetRect.width - SLIDE_INSET * 2
+        let height = targetRect.height - barReserve
+        if (!item.videoSrc && item.width && item.height) {
+          width = Math.min(width, item.width / dpr)
+          height = Math.min(height, item.height / dpr)
+        }
+        return {
+          left: targetRect.left + (targetRect.width - width) / 2,
+          top: targetRect.top + (targetRect.height - barReserve - height) / 2,
+          width,
+          height,
+        }
+      })()
+    : null
+  const cloneTarget = fitBox && originRect
+    ? containRect(fitBox, originRect.width, originRect.height)
     : null
 
   // Caption/exif follow the committed item but update in step with the slide (not at
@@ -937,10 +965,12 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
   // and a transform on the entering card is exactly what WebKit punishes hardest on
   // backdrop-filter. (Safari still withholds the blur until any animation on the
   // element finishes, so the glass sharpens at the fade's end there — 350ms, subtle.)
-  const [dockEntered, setDockEntered] = useState(false)
-  // Held invisible until the clone handoff (animDone) — see the .dk-dock-hold comment
-  // at the close button. The fade plays from the handoff, not from mount.
-  const dockRiseClass = !animDone ? 'dk-dock-hold ' : dockEntered ? '' : 'dk-dock-fade '
+  // The glass caption card is held invisible until the clone HANDOFF (animDone): its
+  // backdrop-filter cannot sample the flying clone, so a card shown earlier blurs the bare
+  // scrim and the blur snaps in when the slide reveals. The close and arrow buttons carry no
+  // glass and instead ride --dk-chrome-fade, the inverse of the page fade (see the open loop).
+  const [captionEntered, setCaptionEntered] = useState(false)
+  const captionRiseClass = !animDone ? 'dk-dock-hold ' : captionEntered ? '' : 'dk-dock-fade '
   useLayoutEffect(() => {
     const dock = dockRef.current
     const root = rootRef.current
@@ -1022,6 +1052,8 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
     const apply = (v: number) => {
       if (v <= 0) return // at rest: leave the open fade alone
       cancelAnimationFrame(openFadeRafRef.current)
+      // The controls leave the open-fade channel too: dragOpacity owns them from here.
+      rootRef.current?.style.setProperty('--dk-chrome-fade', '1')
       const t = Math.min(1, Math.max(0, v / REVEAL_DRAG))
       if (scrim) scrim.style.opacity = String(1 - t)
       // The veil — the in-document layer the iOS bottom bar blurs — tracks the scrim exactly,
@@ -1043,23 +1075,25 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
     const body = document.body
     const root = rootRef.current
     const prevOverflow = body.style.overflow
-    // Lock scroll. If the host page sets `html { scrollbar-gutter: stable }`, that is deliberately
-    // left ALONE: it keeps the ~15px gutter reserved whether or not the scrollbar shows, so nothing
-    // shifts when overflow is hidden. The reserved gutter would leave a strip to the right of the
-    // modal, so size the modal to the PHYSICAL viewport width: window.innerWidth spans the gutter,
-    // whereas 100vw stops short of it when a gutter is reserved. Kept in sync on resize; cleared on
-    // close.
+    // --dk-sb-gutter: the host page's reserved scrollbar gutter (~15-17px with classic
+    // scrollbars, 0 with overlay ones), MEASURED BEFORE THE LOCK. Even with
+    // `html { scrollbar-gutter: stable }`, Chrome drops the gutter once body scroll is locked
+    // (documentElement.clientWidth grows to innerWidth), so a post-lock measurement reads 0
+    // and nothing compensates. The host's layout centres on the layout viewport (window
+    // minus gutter); the slide box and the right-side chrome inset by this value so the
+    // photo, the caption, the close and the next arrow sit on the host's own centre and edge
+    // lines. Fine pointers only: touch scrollbars are overlays with no gutter. Scrollbar width
+    // does not change on resize, so the captured value holds for the modal's lifetime.
+    const gutter = window.matchMedia('(pointer: fine)').matches
+      ? Math.max(0, window.innerWidth - document.documentElement.clientWidth)
+      : 0
+    // Lock scroll. The modal is sized to the PHYSICAL viewport width (window.innerWidth)
+    // rather than 100vw, so it covers the gutter strip whether or not the browser keeps it.
+    // Kept in sync on resize; cleared on close.
     body.style.overflow = 'hidden'
-    // --dk-sb-gutter: how far innerWidth overhangs the visible layout viewport (the
-    // reserved scrollbar strip). The close button and the dock's right padding add it,
-    // so the chrome hugs the CONTENT edge, not the physical window edge under the
-    // scrollbar. Fine pointers only: touch scrollbars are overlays with no gutter.
     const fit = () => {
       if (!root) return
       root.style.width = `${window.innerWidth}px`
-      const gutter = window.matchMedia('(pointer: fine)').matches
-        ? Math.max(0, window.innerWidth - document.documentElement.clientWidth)
-        : 0
       root.style.setProperty('--dk-sb-gutter', `${gutter}px`)
     }
     fit()
@@ -1204,6 +1238,9 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
     // state is opaque, is made transparent HERE — before the gate — or the whole screen goes
     // solid for the ~40ms until the clone paints. That placement is load-bearing.
     if (scrim) scrim.style.opacity = '0' // start transparent; the loop eases it back to 1
+    // The controls start hidden on the same gate and rise on the same curve (see
+    // DK_CHROME_FADE_STYLE): as the page recedes, they arrive.
+    rootRef.current?.style.setProperty('--dk-chrome-fade', '0')
     if (!flightPainted) return
     // 550ms, up from 350: at 350 with the cubic ease the page was two-thirds gone 105ms after
     // the click — it read as the page being yanked away rather than receding behind the photo.
@@ -1221,6 +1258,7 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
       const eased = 1 - (1 - t) ** 2 // ease-out quad — softer start than the old cubic, so the page lingers
       if (veil) veil.style.opacity = String(Math.max(VEIL_MIN_OPACITY, eased)) // the bar's white rises
       if (scrim) scrim.style.opacity = String(eased)                          // the viewport's white, same curve
+      rootRef.current?.style.setProperty('--dk-chrome-fade', String(eased))    // the controls, the inverse
       if (t < 1) openFadeRafRef.current = requestAnimationFrame(frame)
     }
     // The id lives in openFadeRafRef (not a local) so the swipe-down reveal can cancel this
@@ -1273,7 +1311,7 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
     // from below the fold — delay and backwards fill included — so the new item showed no
     // caption for a beat, then it climbed in late. Batched with setCaptionItem, so the
     // remounted card's first render is already class-free.
-    setDockEntered(true)
+    setCaptionEntered(true)
     if (target) setCaptionItem(target)
     // Position the just-committed track synchronously (jump + a direct write, same task as the
     // index shift) so the swap lands in one paint with nothing displaced, then spring to centre.
@@ -1409,16 +1447,15 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
           blur from its first frame. */}
       <style>{`
         .dk-dock-hold { opacity: 0 !important; animation: none !important; }
-        .dk-dock-fade { animation: dk-dock-fade 0.35s ease-out both; }
+        .dk-dock-fade { animation: dk-dock-fade 0.2s ease-out both; }
         @keyframes dk-dock-fade { from { opacity: 0; } to { opacity: 1; } }
         @media (prefers-reduced-motion: reduce) { .dk-dock-fade { animation-duration: 0.01s; } }
       `}</style>
-      <m.div
-        className="absolute inset-0 pointer-events-none z-30"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: animDone ? 1 : 0 }}
-        transition={{ duration: 0.2 }}
-      >
+      {/* The close and arrow buttons enter as the exact INVERSE of the page fade: the open loop
+          writes --dk-chrome-fade on the modal root every frame with the same eased value it
+          gives the scrim, so as the page recedes the controls arrive at the same rate. The
+          fallback of 1 covers deep-link and reduced-motion opens, which skip the loop. */}
+      <div className="absolute inset-0 pointer-events-none z-30" style={DK_CHROME_FADE_STYLE}>
         {/* Fades with the drag but does NOT move. It was the last opaque thing on the modal
             at unmount, and iOS 26's bottom-bar backdrop cache held a snapshot of it (plus the
             modal's white field) for ~a second after a swipe dismiss — a ghost close button.
@@ -1429,14 +1466,17 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
           onClick={(e) => { e.stopPropagation(); onClose() }}
           aria-label="Close"
           // touchAction: taps only — a drag starting on the button must not scroll the page beneath.
-          style={{ touchAction: 'manipulation' }}
+          // --dk-chrome-inset: how far the chrome's hit areas sit from the layout edge (16px
+          // unless the host sets it, e.g. to its own header gutter); the scrollbar gutter is
+          // added on the right so the chrome hugs the CONTENT edge, not the window edge.
+          style={{ touchAction: 'manipulation', right: 'calc(var(--dk-chrome-inset, 16px) + var(--dk-sb-gutter, 0px))' }}
           data-on-photo={chromeOnPhoto.close || undefined}
-          className="dk-chrome-btn pointer-events-auto absolute top-3 right-[calc(16px+var(--dk-sb-gutter,0px))] flex h-11 w-11 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]"
+          className="dk-chrome-btn pointer-events-auto absolute top-3 flex h-11 w-11 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]"
         >
           <IconClose />
         </button>
         </m.div>
-      </m.div>
+      </div>
 
       {/* Image area — full width so the slide track can carry an asset fully off-screen; the 16px
           side margins live on each slide's inner box (see Slide), not here, so they never clip the
@@ -1450,7 +1490,11 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
         <div
           ref={containerRef}
           className="flex-1 min-w-0 relative overflow-hidden"
-          style={{ opacity: containerVisible ? 1 : 0, touchAction: 'none' }}
+          // marginRight = the reserved scrollbar gutter: the host's layout centres on the
+          // layout viewport (window minus gutter), so the slide box must too, or the photo
+          // sits half a gutter right of the page's centre. The fly-in target is measured from
+          // this box, so the clone lands on the same centre.
+          style={{ opacity: containerVisible ? 1 : 0, touchAction: 'none', marginRight: 'var(--dk-sb-gutter, 0px)' }}
           onTouchStart={onTouchStart}
           onTouchMove={onTouchMove}
           onTouchEnd={onTouchEnd}
@@ -1509,22 +1553,27 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
           on every re-render, and any transform on an ANCESTOR of the glass card makes
           it the backdrop root — the card's blur samples a transparent subtree instead
           of the photo (flat tint). The card's OWN transform keeps its backdrop
-          sampling live, so the glass blurs for the whole ride up. dockRiseClass comes
+          sampling live, so the glass blurs for the whole ride up. captionRiseClass comes
           off once the entrance ends — per-item remounts of the keyed card must not
-          replay it. motion owns ONLY the dragOpacity binding here. Runs once per open. */}
+          replay it. The arrow buttons are not on that animation at all: they ride
+          --dk-chrome-fade with the close button. motion owns ONLY the dragOpacity binding here. Runs once per open. */}
       <m.div
         ref={dockRef}
         onClick={(e) => e.stopPropagation()}
         // Slow-mo stretches the rise via the vars the children's animation reads;
-        // the first animationend flips dockEntered (class removal) and re-measures
-        // the caption geometry with everything at rest.
+        // the caption card's animationend flips captionEntered (class removal) and
+        // re-measures the caption geometry with everything at rest.
         // touchAction manipulation: taps on the dock (arrows, caption card) stay taps — a drag
         // starting here must not rubber-band the page beneath the modal on iOS.
         style={{ opacity: dragOpacity, touchAction: 'manipulation', ...(slowMo ? ({ '--dk-dock-rise-dur': '3s', '--dk-dock-rise-delay': '0.6s' } as React.CSSProperties) : null) }}
         onAnimationEnd={(e) => {
           if ((e as React.AnimationEvent).animationName !== 'dk-dock-fade') return
-          setDockEntered(true)
-          measureCapRef.current()
+          // Only the caption card runs this animation (the buttons ride --dk-chrome-fade);
+          // its end is when the caption geometry is at rest and can be measured.
+          if (e.target === capCardRef.current) {
+            setCaptionEntered(true)
+            measureCapRef.current()
+          }
         }}
         className="dk-rail-foot absolute inset-x-0 bottom-0 z-[25]"
       >
@@ -1532,21 +1581,23 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
             to the bottom edge instead of riding up with the row's centerline. On mobile the
             caption takes the full dock width on its own line ABOVE the arrows (order-first +
             basis-full wraps it); justify-between then spreads the arrows to the edges. */}
-        {/* 16px side padding at every size — the photo slides carry 16px inner margins, so
-            card edges and arrow buttons sit on the same vertical lines as the photo. */}
-        <div className="flex max-sm:flex-wrap items-end justify-between gap-3 pl-4 pr-[calc(16px+var(--dk-sb-gutter,0px))] pb-1">
+        {/* Side padding is --dk-chrome-inset (16px unless the host sets it), plus the
+            scrollbar gutter on the right, so the arrows hug the content edge like the close
+            button and the caption card centres on the host's true centre. */}
+        <div className="flex max-sm:flex-wrap items-end justify-between gap-3 pb-1" style={{ paddingLeft: 'var(--dk-chrome-inset, 16px)', paddingRight: 'calc(var(--dk-chrome-inset, 16px) + var(--dk-sb-gutter, 0px))' }}>
           {index > 0 ? (
             <button
               ref={prevBtnRef}
               onClick={(e) => { e.stopPropagation(); commit(-1, e.shiftKey) }}
               aria-label="Previous photo"
               data-on-photo={chromeOnPhoto.prev || undefined}
-              className={`${dockRiseClass}dk-chrome-btn flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]`}
+              className="dk-chrome-btn flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]"
+              style={DK_CHROME_FADE_STYLE}
             >
               <IconArrow dir="left" />
             </button>
           ) : (
-            <span className={`${dockRiseClass}h-11 w-11 shrink-0`} />
+            <span className="h-11 w-11 shrink-0" />
           )}
           <div className="flex min-w-0 flex-1 justify-center max-sm:order-first max-sm:basis-full">
             {hasCaptions && (capCaption || capExif) && (
@@ -1554,7 +1605,7 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
                 key={captionItem.src}
                 ref={capCardRef}
                 data-on-photo={capOnPhoto ? '' : undefined}
-                className={`${dockRiseClass}dk-caption-card max-w-full rounded-xl px-3.5 py-2.5 text-center`}
+                className={`${captionRiseClass}dk-caption-card max-w-full rounded-xl px-3.5 py-2.5 text-center`}
               >
                 {capCaption && (
                   <p className="font-[family-name:var(--dk-font-sans)] text-[14px] leading-[1.35]" style={{ color: 'var(--dk-cap-fg)' }}>{capCaption}</p>
@@ -1575,12 +1626,13 @@ export function DKLightbox({ item, index, total, onClose, onPrev, onNext, origin
               onClick={(e) => { e.stopPropagation(); commit(1, e.shiftKey) }}
               aria-label="Next photo"
               data-on-photo={chromeOnPhoto.next || undefined}
-              className={`${dockRiseClass}dk-chrome-btn flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]`}
+              className="dk-chrome-btn flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--dk-fg)] transition-colors hover:bg-[var(--dk-surface)] active:bg-[var(--dk-surface)]"
+              style={DK_CHROME_FADE_STYLE}
             >
               <IconArrow dir="right" />
             </button>
           ) : (
-            <span className={`${dockRiseClass}h-11 w-11 shrink-0`} />
+            <span className="h-11 w-11 shrink-0" />
           )}
         </div>
       </m.div>
