@@ -151,7 +151,14 @@ export function DKCarousel({
         {items.length > 1 && (
           // bottom-0: dots centred in a 24px hit area (8px padding) land the dot 8px above the base.
           // z-30 keeps the dots above the slides, which carry z-index (10/20) for the one-way fade.
-          <div className="absolute inset-x-0 bottom-0 z-30 flex items-center justify-center gap-1">
+          // The row is laid out by hand so the active pill's grow/shrink never animates a layout
+          // property: every dot is a 12px slot (8px pill + 2px padding a side) on a 16px pitch
+          // (the old gap-1), the active one 22px wider, so the row's total width never changes.
+          // Each button slides to its slot by translateX and each pill reveals its width by
+          // clip-path (it is always 30px, clipped to an 8px circle when inactive), both on the
+          // same 300ms ease-out the width transition used. The end states match the old flex row.
+          <div className="absolute inset-x-0 bottom-0 z-30 flex justify-center">
+            <div className="relative h-6" style={{ width: items.length * 16 - 4 + 22 }}>
             {items.map((item, i) => {
               const isActive = i === active
               return (
@@ -164,30 +171,38 @@ export function DKCarousel({
                   // The dot stays small, but the button is a 24px-minimum hit target so it is
                   // easy to click, with a pointer cursor and a hover brighten so it reads as one.
                   // The ::before extension (not min-w) supplies the extra clickable width, so the
-                  // dots' visual spacing is untouched while every target clears 24x24. (Ported
-                  // from the site slideshow, 2026-08-28 drift audit.)
-                  className="group/dot relative flex h-6 cursor-pointer items-center px-0.5 before:absolute before:inset-y-0 before:-inset-x-1.5"
+                  // dots' visual spacing is untouched while every target clears 24x24.
+                  // (Ported from the site slideshow, 2026-08-28 drift audit.)
+                  // The button's own width snaps (it is invisible); only the transform animates.
+                  className="group/dot absolute left-0 top-0 flex h-6 cursor-pointer items-center px-0.5 transition-transform duration-300 ease-out motion-reduce:transition-none before:absolute before:inset-y-0 before:-inset-x-1.5"
+                  style={{ width: isActive ? 34 : 12, transform: `translateX(${i * 16 + (i > active ? 22 : 0)}px)` }}
                 >
-                  <span
-                    className="relative block h-2 overflow-hidden rounded-full drop-shadow-[0_0_2px_rgba(0,0,0,0.6)] transition-[width,filter] duration-300 ease-out group-hover/dot:brightness-150 motion-reduce:transition-none"
-                    style={{
-                      width: isActive ? 30 : 8,
-                      backgroundColor: isActive ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.55)',
-                    }}
-                  >
-                    {/* The active pill's fill sweeps over the dwell time. Keyed by `active` so
-                        React remounts it each advance, restarting the CSS animation from 0. */}
-                    {isActive && (
-                      <span
-                        key={active}
-                        className="dk-ss-fill absolute inset-y-0 left-0 rounded-full bg-white"
-                        style={{ ['--dk-ss-dur' as string]: `${interval}ms` }}
-                      />
-                    )}
+                  {/* The shadow + hover brighten sit on a wrapper so the pill's clip doesn't cut
+                      them off; pointer-events-none keeps the 30px wrapper from widening the
+                      inactive button's hit area over its neighbours. */}
+                  <span className="pointer-events-none block drop-shadow-[0_0_2px_rgba(0,0,0,0.6)] transition-[filter] duration-300 ease-out group-hover/dot:brightness-150 motion-reduce:transition-none">
+                    <span
+                      className="relative block h-2 w-[30px] overflow-hidden rounded-full transition-[clip-path] duration-300 ease-out motion-reduce:transition-none"
+                      style={{
+                        clipPath: isActive ? 'inset(0 0 0 0 round 4px)' : 'inset(0 22px 0 0 round 4px)',
+                        backgroundColor: isActive ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.55)',
+                      }}
+                    >
+                      {/* The active pill's fill sweeps over the dwell time. Keyed by `active` so
+                          React remounts it each advance, restarting the CSS animation from 0. */}
+                      {isActive && (
+                        <span
+                          key={active}
+                          className="dk-ss-fill absolute inset-y-0 left-0 rounded-full bg-white"
+                          style={{ ['--dk-ss-dur' as string]: `${interval}ms` }}
+                        />
+                      )}
+                    </span>
                   </span>
                 </button>
               )
             })}
+            </div>
           </div>
         )}
       </div>

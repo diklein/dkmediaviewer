@@ -29,8 +29,11 @@ export interface DKMediaItem {
   /** Intrinsic pixels. Optional, but supplying them avoids layout shift in the grid. */
   width?: number
   height?: number
-  /** Average/dominant color as #rrggbb — used for the blur-up placeholder. */
+  /** Average/dominant color as #rrggbb — the tile wears it until the image paints. */
   color?: string
+  /** A BlurHash (https://blurha.sh) of the image — decoded in the browser into the blurred
+   *  preview a tile wears until its image paints. Unsplash's API gives one per photo. */
+  blurHash?: string
   /** Camera settings for the mono spec line under the caption. */
   exif?: DKExif
 }

@@ -31,7 +31,7 @@ The viewer is distributed through the [shadcn registry](https://ui.shadcn.com/do
 npx shadcn@latest add https://diklein.com/r/dk-media-viewer.json
 ```
 
-React 18+ and Tailwind CSS v4 are required. The only npm dependency it brings in is [`motion`](https://motion.dev).
+React 18+ and Tailwind CSS v4 are required. It brings in no other npm dependencies.
 
 ## Use
 
@@ -50,13 +50,14 @@ An item is just:
 {
   src: '/photos/golden-gate.jpg',
   alt: 'Golden Gate Bridge in fog',
-  caption: 'Marin Headlands, October.',   // optional: shown on the lightbox glass card
-  width: 2048, height: 1365,              // optional: avoids layout shift, drives the caption card's glass-vs-ink verdict
+  caption: 'Marin Headlands, October.',   // optional: shown under the photo in the lightbox
+  width: 2048, height: 1365,              // optional: avoids layout shift
   exif: {                                  // optional: the mono spec line
     make: 'Ricoh', model: 'GR IIIx',
     exposureTime: '1/500', aperture: '2.8', focalLength: '26.1', iso: 200,
   },
   videoSrc: '/photos/clip.mp4',           // optional: makes it a video (src = poster)
+  blurHash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj', // optional: a blurred preview while it loads
 }
 ```
 
@@ -76,7 +77,7 @@ Videos need a poster image because it gives a video something to show instantly 
 
 The grid and the lightbox share `src`, so a single reasonably large image works out of the box. The browser scales it down in the grid and shows it full size in the lightbox.
 
-When your originals are heavy use two sizes. The grid loads a small file and the lightbox upgrades to the large one. The upgrade never delays the open because the lightbox always opens by animating the image already on your screen and then fades in the sharper version once the animation has landed. 
+When your originals are heavy use two sizes. The grid loads a small file and the lightbox upgrades to the large one. The upgrade never delays the open because the lightbox always opens by animating the image already on your screen and fades in the sharper version as soon as it is ready. 
 
 If your images live on a CDN or behind an image optimizer, point `src` at a small render and rewrite it in `getHiResSrc`:
 
@@ -131,7 +132,7 @@ import { DKCarousel } from '@/components/dk-media-viewer/dk-carousel'
 - **Lightbox navigation:** swipe with axis-lock and rubber-banding at the ends. Arrow keys and on-screen controls can also switch assets. A swipe down will dismiss the lightbox on mobile.
 - **A real modal:** Everything behind the modal goes `inert` and focus enters the dialog. The `Tab` key cycles controls, and a close hands focus back to the item you were viewing (with a focus ring appearing only for keyboard users).
 - **Light and dark mode** via the `.dark` class (shadcn convention), falling back to `prefers-color-scheme`. Every color is a `--dk-*` variable.
-- **`prefers-reduced-motion`** is honored everywhere: no autoplay, no shimmer sweep, and instant transitions.
+- **`prefers-reduced-motion`** is honored everywhere: no autoplay and instant transitions.
 - **Videos** keep playing through the open animation and hand off frame-accurately to the modal player. This was inspired by the minimize feature Steve Jobs [demonstrated](https://youtu.be/2GkoAa5718Y?t=165) in the Mac OS X introduction in 2000.
 
 ## The easter egg

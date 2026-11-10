@@ -28,7 +28,7 @@ export interface DKMediaViewerProps {
     item: DKMediaItem,
     ctx: { index: number; priority: boolean; sizes: string; className: string },
   ) => React.ReactNode
-  /** The 1px photo edge outline in the lightbox. Default true (photographs). */
+  /** A 1px edge outline on the grid thumbnails and the lightbox photo. Default off. */
   showOutline?: boolean
   /** Reserve the lightbox caption/exif rail. Default: on when any item carries one. */
   hasCaptions?: boolean
@@ -37,17 +37,111 @@ export interface DKMediaViewerProps {
 }
 
 const GRID_SIZES = '(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw'
-const IMG_CLASS = 'dk-img-outline w-full h-auto transition-opacity duration-200 group-hover:opacity-85'
+const IMG_BASE = 'w-full h-auto'
+
+/* BlurHash decoder (https://blurha.sh), the reference algorithm. An item that carries a
+ * blurHash wears a blurred preview of itself until its image arrives. */
+const B83 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz#$%*+,-.:;=?@[]^_{|}~'
+const decode83 = (str: string) => {
+  let v = 0
+  for (const c of str) v = v * 83 + B83.indexOf(c)
+  return v
+}
+const toLinear = (v: number) => {
+  const x = v / 255
+  return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4
+}
+const toSrgb = (v: number) => {
+  const x = Math.max(0, Math.min(1, v))
+  return x <= 0.0031308 ? Math.round(x * 12.92 * 255 + 0.5) : Math.round((1.055 * x ** (1 / 2.4) - 0.055) * 255 + 0.5)
+}
+const signPow = (v: number, exp: number) => Math.sign(v) * Math.abs(v) ** exp
+function decodeBlurHash(hash: string, width: number, height: number): Uint8ClampedArray | null {
+  if (hash.length < 6) return null
+  const size = decode83(hash[0])
+  const ny = Math.floor(size / 9) + 1
+  const nx = (size % 9) + 1
+  if (hash.length !== 4 + 2 * nx * ny) return null
+  const max = (decode83(hash[1]) + 1) / 166
+  const colors: [number, number, number][] = []
+  for (let i = 0; i < nx * ny; i++) {
+    if (i === 0) {
+      const v = decode83(hash.slice(2, 6))
+      colors.push([toLinear(v >> 16), toLinear((v >> 8) & 255), toLinear(v & 255)])
+    } else {
+      const v = decode83(hash.slice(4 + i * 2, 6 + i * 2))
+      colors.push([signPow((Math.floor(v / 361) - 9) / 9, 2) * max, signPow(((Math.floor(v / 19) % 19) - 9) / 9, 2) * max, signPow(((v % 19) - 9) / 9, 2) * max])
+    }
+  }
+  const pixels = new Uint8ClampedArray(width * height * 4)
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let r = 0, g = 0, b = 0
+      for (let j = 0; j < ny; j++) {
+        for (let i = 0; i < nx; i++) {
+          const basis = Math.cos((Math.PI * x * i) / width) * Math.cos((Math.PI * y * j) / height)
+          const c = colors[i + j * nx]
+          r += c[0] * basis; g += c[1] * basis; b += c[2] * basis
+        }
+      }
+      const o = 4 * (x + y * width)
+      pixels[o] = toSrgb(r); pixels[o + 1] = toSrgb(g); pixels[o + 2] = toSrgb(b); pixels[o + 3] = 255
+    }
+  }
+  return pixels
+}
+
+/* What a tile shows before its photo arrives, in two layers, both on the tile itself and
+ * both optional: item.color as a plain background-color (in the server's HTML, nothing to
+ * decode), and item.blurHash decoded here, once the page is idle, into a 32px preview the
+ * browser stretches smooth. Both STAY for the life of the tile. "Loaded" is not "painted":
+ * on a fast scroll Safari reports a cached photo as loaded frames before it has drawn it,
+ * and a placeholder removed on that signal leaves bare page in between. The photo is opaque,
+ * so once drawn it simply covers them. (Give a transparent image neither.) */
+function paintBlurPreviews(items: DKMediaItem[], tileFor: (index: number) => HTMLElement | null): () => void {
+  const canvas = document.createElement('canvas')
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return () => {}
+  // Safari has no requestIdleCallback; a short timeout stands in.
+  const w = window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number; cancelIdleCallback?: (id: number) => void }
+  const idle = (cb: () => void) => (w.requestIdleCallback ? w.requestIdleCallback(cb, { timeout: 500 }) : window.setTimeout(cb, 50))
+  const cancel = (id: number) => (w.cancelIdleCallback ? w.cancelIdleCallback(id) : window.clearTimeout(id))
+  let i = 0
+  let handle = idle(function work() {
+    // A dozen tiles per idle slice: no slice is long enough to be felt in a scroll.
+    for (let n = 0; n < 12 && i < items.length; n++, i++) {
+      const item = items[i]
+      if (!item.blurHash || item.videoSrc) continue
+      const tile = tileFor(i)
+      if (!tile || tile.style.backgroundImage) continue
+      const wide = (item.width ?? 3) >= (item.height ?? 2)
+      const ratio = (item.width ?? 3) / (item.height ?? 2)
+      const pw = wide ? 32 : Math.max(1, Math.round(32 * ratio))
+      const ph = wide ? Math.max(1, Math.round(32 / ratio)) : 32
+      const pixels = decodeBlurHash(item.blurHash, pw, ph)
+      if (!pixels) continue
+      canvas.width = pw
+      canvas.height = ph
+      const data = ctx.createImageData(pw, ph)
+      data.data.set(pixels)
+      ctx.putImageData(data, 0, 0)
+      tile.style.backgroundImage = `url(${canvas.toDataURL('image/jpeg', 0.7)})`
+    }
+    if (i < items.length) handle = idle(work)
+  })
+  return () => cancel(handle)
+}
 
 export function DKMediaViewer({
   items,
   className,
   getHiResSrc,
   renderImage,
-  showOutline = true,
+  showOutline = false,
   hasCaptions,
   deepLink = false,
 }: DKMediaViewerProps) {
+  const IMG_CLASS = showOutline ? `dk-img-outline ${IMG_BASE}` : IMG_BASE
   const [numCols, setNumCols] = useState(3)
   // Reduced-motion visitors get still thumbnails: autoPlay drops and each clip holds its poster
   // frame, with the lightbox as the play path (its player carries explicit controls). Read in an
@@ -116,6 +210,10 @@ export function DKMediaViewer({
     })
   }, [reducedMotion])
 
+  // Blurred previews, laid on once the tiles exist (a column change remounts them, and with
+  // them the inline backgrounds).
+  useEffect(() => paintBlurPreviews(items, (i) => thumbEls.current.get(i) ?? null), [items, numCols])
+
   if (items.length === 0) return null
 
   const columns: Array<Array<{ item: DKMediaItem; originalIndex: number }>> =
@@ -125,9 +223,9 @@ export function DKMediaViewer({
   return (
     <>
       {/* data-dk-scope: the lightbox pauses playing <video>s inside this wrapper while open. */}
-      <div data-dk-scope className={`dk-scope flex gap-2${className ? ` ${className}` : ''}`}>
+      <div data-dk-scope className={`dk-scope flex gap-1${className ? ` ${className}` : ''}`}>
         {columns.map((colItems, colIndex) => (
-          <div key={colIndex} className="flex-1 flex flex-col gap-2">
+          <div key={colIndex} className="flex-1 flex flex-col gap-1">
             {colItems.map(({ item, originalIndex }) => (
               <button
                 key={item.src}
@@ -141,7 +239,11 @@ export function DKMediaViewer({
                 // No focus-visible override: the host's global :focus-visible styling (or the
                 // browser default) gives keyboard users their ring — opting out leaves them
                 // tabbing blind.
-                className="dk-cv-auto block w-full cursor-zoom-in group"
+                // The hover dim is a veil over the tile, not the image going translucent: the
+                // placeholder layers stay behind the image for good (see paintBlurPreviews),
+                // and a see-through image would fade toward them instead of toward the page.
+                className="dk-cv-auto relative block w-full cursor-zoom-in after:pointer-events-none after:absolute after:inset-0 after:bg-[var(--dk-bg)] after:opacity-0 after:transition-opacity after:duration-200 hover:after:opacity-15"
+                style={item.color && !item.videoSrc ? { backgroundColor: item.color, backgroundSize: '100% 100%' } : { backgroundSize: '100% 100%' }}
                 aria-label={item.alt ?? item.caption ?? (item.videoSrc ? 'Play video' : 'Open photo')}
               >
                 {item.videoSrc ? (
@@ -181,10 +283,6 @@ export function DKMediaViewer({
                     className={IMG_CLASS}
                     loading={originalIndex < 3 ? 'eager' : 'lazy'}
                     decoding="async"
-                    // Blur-up stand-in: the item's dominant color fills the box until the image
-                    // paints, then clears (so transparent images don't keep a colored tile).
-                    style={item.color ? { backgroundColor: item.color } : undefined}
-                    onLoad={(e) => { e.currentTarget.style.backgroundColor = '' }}
                   />
                 )}
               </button>
